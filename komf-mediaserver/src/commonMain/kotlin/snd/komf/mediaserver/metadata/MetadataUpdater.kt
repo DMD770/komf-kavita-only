@@ -34,18 +34,23 @@ class MetadataUpdater(
     private val overrideExistingCovers: Boolean,
     private val uploadBookCovers: Boolean,
     private val uploadSeriesCovers: Boolean,
-    private val lockCovers: Boolean,
+    private val lockSeriesCover: Boolean,
+    private val lockVolumeCover: Boolean,
 ) {
     private val requireMetadataRefresh = setOf(UpdateMode.COMIC_INFO)
     private val natSortComparator: Comparator<String> = caseInsensitiveNatSortComparator()
 
     suspend fun updateMetadata(series: MediaServerSeries, metadata: SeriesAndBookMetadata) {
+        updateMetadata(series, metadata, deferScan = false)
+    }
+
+    suspend fun updateMetadata(series: MediaServerSeries, metadata: SeriesAndBookMetadata, deferScan: Boolean) {
         val processedMetadata = postProcessor.process(metadata)
         updateSeriesMetadata(series, processedMetadata.seriesMetadata)
         updateBookMetadata(unprocessedMetadata = metadata, processedMetadata = processedMetadata)
 
         if (updateModes.any { it in requireMetadataRefresh })
-            mediaServerClient.refreshMetadata(series.libraryId, series.id)
+            mediaServerClient.refreshMetadata(series.libraryId, series.id, deferScan = deferScan)
     }
 
     suspend fun resetLibraryMetadata(libraryId: MediaServerLibraryId, removeComicInfo: Boolean) {
@@ -161,7 +166,8 @@ class MetadataUpdater(
             mediaServerClient.uploadBookThumbnail(
                 bookId = bookId,
                 thumbnail = thumbnail,
-                selected = selectThumbnail
+                selected = selectThumbnail,
+                lock = lockVolumeCover
             )
         }
 
@@ -188,7 +194,7 @@ class MetadataUpdater(
                 seriesId = seriesId,
                 thumbnail = thumbnail,
                 selected = selectThumbnail,
-                lock = lockCovers,
+                lock = lockSeriesCover,
             )
         }
 

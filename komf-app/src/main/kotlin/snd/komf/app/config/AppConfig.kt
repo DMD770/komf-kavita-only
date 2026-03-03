@@ -23,5 +23,7 @@ data class AppConfig(
 
 @Serializable
 data class ServerConfig(
-    val port: Int = 8085
+    val port: Int = 8085,
+    val kavitaOnly: Boolean = true,
+    val metadataRequestsPerMinute: Int = 0
 )

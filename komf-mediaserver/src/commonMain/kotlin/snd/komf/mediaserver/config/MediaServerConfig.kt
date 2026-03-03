@@ -24,6 +24,19 @@ data class KavitaConfig(
     val apiKey: String = "",
     val eventListener: EventListenerConfig = EventListenerConfig(enabled = false),
     val metadataUpdate: MetadataUpdateConfig = MetadataUpdateConfig(),
+    val apiRateLimit: KavitaApiRateLimitConfig = KavitaApiRateLimitConfig(),
+    val scan: KavitaScanConfig = KavitaScanConfig(),
+)
+
+@Serializable
+data class KavitaApiRateLimitConfig(
+    val updateEventsPerMinute: Int = 120,
+    val scanEventsPerMinute: Int = 30,
+)
+
+@Serializable
+data class KavitaScanConfig(
+    val deferredLibraryScanDelaySeconds: Long = 120,
 )
 
 @Serializable
@@ -50,7 +63,8 @@ data class MetadataProcessingConfig(
     val bookCovers: Boolean = false,
     val seriesCovers: Boolean = false,
     val overrideExistingCovers: Boolean = true,
-    var lockCovers: Boolean = true,
+    var lockSeriesCover: Boolean = true,
+    var lockVolumeCover: Boolean = false,
     val updateModes: List<UpdateMode> = listOf(API),
     val overrideComicInfo: Boolean = false,
 

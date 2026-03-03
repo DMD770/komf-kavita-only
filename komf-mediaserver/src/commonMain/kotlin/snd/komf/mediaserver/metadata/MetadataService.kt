@@ -134,15 +134,18 @@ class MetadataService(
         return jobId
     }
 
-    fun matchLibraryMetadata(libraryId: MediaServerLibraryId) {
+    fun matchLibraryMetadata(libraryId: MediaServerLibraryId, dryRun: Boolean = false) {
         coroutineScope.launch {
             var errorCount = 0
             var pageNumber = 1
+            val deferredScans = mutableListOf<Pair<MediaServerLibraryId, MediaServerSeriesId>>()
             do {
                 val page = mediaServerClient.getSeries(libraryId, pageNumber)
                 page.content.forEach {
                     runCatching {
-                        jobTracker.getMetadataJobEvents(matchSeriesMetadata(it.id))
+                        jobTracker.getMetadataJobEvents(
+                            matchSeriesMetadata(it.id, deferScans = true, dryRun = dryRun)
+                        )
                             ?.takeWhile { it !is CompletionEvent }
                             ?.collect()
                     }
@@ -150,15 +153,28 @@ class MetadataService(
                             logger.error(it) { }
                             errorCount += 1
                         }
+                    if (!dryRun) deferredScans.add(libraryId to it.id)
                 }
                 pageNumber++
             } while (page.pageNumber != page.totalPages && page.content.isNotEmpty())
-            logger.info { "Finished library scan. Encountered $errorCount errors" }
+            
+            // Execute all deferred scans after library processing is complete
+            if (!dryRun && mediaServerClient is snd.komf.mediaserver.kavita.KavitaMediaServerClientAdapter) {
+                mediaServerClient.executeDeferredScans(deferredScans)
+            }
+            
+            if (dryRun) {
+                logger.info { "Finished dry-run library match for $libraryId. Encountered $errorCount errors. No metadata was written and no scans were triggered." }
+            } else {
+                logger.info { "Finished library scan. Encountered $errorCount errors" }
+            }
         }
     }
 
     fun matchSeriesMetadata(
         seriesId: MediaServerSeriesId,
+        deferScans: Boolean = false,
+        dryRun: Boolean = false
     ): MetadataJobId {
 
         val jobId = launchJob(seriesId) { eventFlow ->
@@ -208,8 +224,17 @@ class MetadataService(
                 } else metadata
             }
 
+            if (dryRun) {
+                logger.info {
+                    "dry-run match for series \"${seriesTitle}\" ${series.id}: " +
+                        "would update using provider ${matchResult.first.providerName()} " +
+                        "(books=${books.size}, deferScan=$deferScans)"
+                }
+                return@launchJob
+            }
+
             eventFlow.emit(PostProcessingStartEvent)
-            metadataUpdateService.updateMetadata(series, metadata)
+            metadataUpdateService.updateMetadata(series, metadata, deferScan = deferScans)
             logger.info { "finished metadata update of series \"${seriesTitle}\" ${series.id}" }
         }
 

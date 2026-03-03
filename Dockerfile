@@ -1,8 +1,8 @@
 FROM eclipse-temurin:21-jre AS base-amd64
 
-FROM eclipse-temurin:21.0.6_7-jre AS base-arm64
+FROM eclipse-temurin:21-jre AS base-arm64
 
-FROM eclipse-temurin:17-jre AS base-arm
+FROM eclipse-temurin:21-jre AS base-arm
 
 FROM base-${TARGETARCH} AS build-final
 

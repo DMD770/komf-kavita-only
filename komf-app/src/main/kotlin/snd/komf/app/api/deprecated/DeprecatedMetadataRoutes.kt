@@ -13,6 +13,8 @@ import io.ktor.server.util.getOrFail
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.takeWhile
+import snd.komf.api.KomfErrorResponse
+import snd.komf.app.api.RequestRateLimiter
 import snd.komf.app.api.deprecated.dto.IdentifySeriesRequest
 import snd.komf.mediaserver.MediaServerClient
 import snd.komf.mediaserver.MetadataServiceProvider
@@ -28,6 +30,7 @@ class DeprecatedMetadataRoutes(
     private val metadataServiceProvider: Flow<MetadataServiceProvider>,
     private val mediaServerClient: Flow<MediaServerClient>,
     private val jobTracker: Flow<KomfJobTracker>,
+    private val requestRateLimiter: Flow<RequestRateLimiter>,
     private val serverType: MediaServer,
 ) {
 
@@ -47,6 +50,7 @@ class DeprecatedMetadataRoutes(
 
     private fun Route.getProvidersRoute() {
         get("/providers") {
+            if (!call.checkRateLimit()) return@get
             val libraryId = call.request.queryParameters["libraryId"]?.let { MediaServerLibraryId(it) }
 
             val providers = (
@@ -62,6 +66,7 @@ class DeprecatedMetadataRoutes(
 
     private fun Route.searchSeriesRoute() {
         get("/search") {
+            if (!call.checkRateLimit()) return@get
             val seriesName = call.request.queryParameters["name"]
                 ?: return@get call.response.status(HttpStatusCode.BadRequest)
 
@@ -82,6 +87,7 @@ class DeprecatedMetadataRoutes(
 
     private fun Route.identifySeriesRoute() {
         post("/identify") {
+            if (!call.checkRateLimit()) return@post
             val request = call.receive<IdentifySeriesRequest>()
 
             val libraryId = request.libraryId
@@ -103,6 +109,7 @@ class DeprecatedMetadataRoutes(
 
     private fun Route.matchSeriesRoute() {
         post("/match/library/{libraryId}/series/{seriesId}") {
+            if (!call.checkRateLimit()) return@post
 
             val libraryId = call.parameters.getOrFail("libraryId")
             val seriesId = MediaServerSeriesId(call.parameters.getOrFail("seriesId"))
@@ -117,14 +124,17 @@ class DeprecatedMetadataRoutes(
 
     private fun Route.matchLibraryRoute() {
         post("/match/library/{libraryId}") {
+            if (!call.checkRateLimit()) return@post
             val libraryId = MediaServerLibraryId(call.parameters.getOrFail("libraryId"))
-            metadataServiceProvider.first().metadataServiceFor(libraryId.value).matchLibraryMetadata(libraryId)
+            val dryRun = call.queryParameters["dryRun"].toBoolean()
+            metadataServiceProvider.first().metadataServiceFor(libraryId.value).matchLibraryMetadata(libraryId, dryRun = dryRun)
             call.response.status(HttpStatusCode.Accepted)
         }
     }
 
     private fun Route.resetSeriesRoute() {
         post("/reset/library/{libraryId}/series/{seriesId}") {
+            if (!call.checkRateLimit()) return@post
             val libraryId = call.parameters.getOrFail("libraryId")
             val seriesId = MediaServerSeriesId(call.parameters.getOrFail("seriesId"))
             val removeComicInfo = call.queryParameters["removeComicInfo"].toBoolean()
@@ -135,12 +145,22 @@ class DeprecatedMetadataRoutes(
 
     private fun Route.resetLibraryRoute() {
         post("/reset/library/{libraryId}") {
+            if (!call.checkRateLimit()) return@post
             val libraryId = MediaServerLibraryId(call.parameters.getOrFail("libraryId"))
             val removeComicInfo = call.queryParameters["removeComicInfo"].toBoolean()
             metadataServiceProvider.first().updateServiceFor(libraryId.value)
                 .resetLibraryMetadata(libraryId, removeComicInfo)
             call.response.status(HttpStatusCode.NoContent)
         }
+    }
+
+    private suspend fun io.ktor.server.application.ApplicationCall.checkRateLimit(): Boolean {
+        if (requestRateLimiter.first().tryAcquire()) return true
+        respond(
+            HttpStatusCode.TooManyRequests,
+            KomfErrorResponse("Too many requests. Reduce request rate and retry.")
+        )
+        return false
     }
 
 }

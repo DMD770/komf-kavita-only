@@ -71,10 +71,10 @@ data class KavitaChapter(
     val coverArtistLocked: Boolean,
     val languageLocked: Boolean,
     val summaryLocked: Boolean,
-//    val titleNameLocked: Boolean,
-//    val isbnLocked: Boolean,
-//    val releaseDateLocked: Boolean,
-//    val sortOrderLocked: Boolean,
+    val titleNameLocked: Boolean,
+    val isbnLocked: Boolean,
+    val releaseDateLocked: Boolean,
+    val sortOrderLocked: Boolean,
 )
 
 @Serializable

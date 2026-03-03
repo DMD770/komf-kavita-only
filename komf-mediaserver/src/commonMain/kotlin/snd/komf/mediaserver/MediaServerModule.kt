@@ -27,6 +27,7 @@ import snd.komf.mediaserver.jobs.KomfJobTracker
 import snd.komf.mediaserver.jobs.KomfJobsRepository
 import snd.komf.mediaserver.jobs.MetadataJobId
 import snd.komf.mediaserver.kavita.JvmJwtConsumer
+import snd.komf.mediaserver.kavita.KavitaApiCompatibilityChecker
 import snd.komf.mediaserver.kavita.KavitaAuthClient
 import snd.komf.mediaserver.kavita.KavitaClient
 import snd.komf.mediaserver.kavita.KavitaEventHandler
@@ -65,6 +66,7 @@ import kotlin.time.Instant
 class MediaServerModule(
     komgaConfig: KomgaConfig,
     kavitaConfig: KavitaConfig,
+    kavitaOnly: Boolean,
     databaseConfig: DatabaseConfig,
     jsonBase: Json,
     ktorBaseClient: HttpClient,
@@ -76,14 +78,12 @@ class MediaServerModule(
     val jobRepository = KomfJobsRepository(mediaServerDatabase.komfJobRecordQueries)
     val jobTracker = KomfJobTracker(jobRepository)
 
-    val komgaClient: KomgaMediaServerClientAdapter
+    val komgaClient: MediaServerClient
     val komgaMetadataServiceProvider: MetadataServiceProvider
     private val komgaBookThumbnailRepository: BookThumbnailsRepository
     private val komgaSerThumbnailsRepository: SeriesThumbnailsRepository
     private val komgaSeriesMatchRepository: SeriesMatchRepository
-    private val komgaMetadataEventHandler: MetadataEventHandler
-    private val komgaNotificationsHandler: NotificationsEventHandler?
-    private val komgaEventHandler: KomgaEventHandler
+    private val komgaEventHandler: KomgaEventHandler?
 
     val kavitaMediaServerClient: KavitaMediaServerClientAdapter
     val kavitaMetadataServiceProvider: MetadataServiceProvider
@@ -95,25 +95,12 @@ class MediaServerModule(
     private val kavitaTokenProvider: KavitaTokenProvider
     private val kavitaKtorClient: HttpClient
     private val kavitaClient: KavitaClient
+    val kavitaApiCompatibilityChecker: KavitaApiCompatibilityChecker
     private val kavitaMetadataEventHandler: MetadataEventHandler
     private val kavitaNotificationsHandler: NotificationsEventHandler?
     private val kavitaEventHandler: KavitaEventHandler
 
     init {
-        val komgaClientFactory = KomgaClientFactory.Builder()
-            .ktor(ktorBaseClient)
-            .cookieStorage(AcceptAllCookiesStorage())
-            .username(komgaConfig.komgaUser)
-            .password(komgaConfig.komgaPassword)
-            .baseUrlBuilder { URLBuilder(komgaConfig.baseUri).appendPathSegments("/") }
-            .useragent(komfUserAgent)
-            .build()
-        komgaClient = KomgaMediaServerClientAdapter(
-            komgaClientFactory.bookClient(),
-            komgaClientFactory.seriesClient(),
-            komgaClientFactory.libraryClient(),
-            komgaConfig.thumbnailSizeLimit
-        )
         komgaBookThumbnailRepository = BookThumbnailsRepository(
             mediaServerDatabase.bookThumbnailQueries,
             MediaServer.KOMGA
@@ -126,43 +113,73 @@ class MediaServerModule(
             mediaServerDatabase.seriesMatchQueries,
             MediaServer.KOMGA
         )
-        komgaMetadataServiceProvider = createMetadataServiceProvider(
-            config = komgaConfig.metadataUpdate,
-            mediaServerClient = komgaClient,
-            seriesThumbnailsRepository = komgaSerThumbnailsRepository,
-            bookThumbnailsRepository = komgaBookThumbnailRepository,
-            seriesMatchRepository = komgaSeriesMatchRepository,
-        )
+        if (!kavitaOnly) {
+            val komgaClientFactory = KomgaClientFactory.Builder()
+                .ktor(ktorBaseClient)
+                .cookieStorage(AcceptAllCookiesStorage())
+                .username(komgaConfig.komgaUser)
+                .password(komgaConfig.komgaPassword)
+                .baseUrlBuilder { URLBuilder(komgaConfig.baseUri).appendPathSegments("/") }
+                .useragent(komfUserAgent)
+                .build()
+            komgaClient = KomgaMediaServerClientAdapter(
+                komgaClientFactory.bookClient(),
+                komgaClientFactory.seriesClient(),
+                komgaClientFactory.libraryClient(),
+                komgaConfig.thumbnailSizeLimit
+            )
 
-        komgaMetadataEventHandler = MetadataEventHandler(
-            metadataServiceProvider = komgaMetadataServiceProvider,
-            bookThumbnailsRepository = komgaBookThumbnailRepository,
-            seriesThumbnailsRepository = komgaSerThumbnailsRepository,
-            seriesMatchRepository = komgaSeriesMatchRepository,
-            jobTracker = jobTracker,
-            libraryFilter = {
-                val libraries = komgaConfig.eventListener.metadataLibraryFilter
-                if (libraries.isEmpty()) true
-                else libraries.contains(it)
-            },
-            seriesFilter = { seriesId -> komgaConfig.eventListener.metadataSeriesExcludeFilter.none { seriesId == it } },
-        )
-        komgaNotificationsHandler = NotificationsEventHandler(
-            mediaServerClient = komgaClient,
-            appriseService = appriseService,
-            discordWebhookService = discordWebhookService,
-            libraryFilter = {
-                val libraries = komgaConfig.eventListener.notificationsLibraryFilter
-                if (libraries.isEmpty()) true
-                else libraries.contains(it)
-            },
-            mediaServer = MediaServer.KOMGA
-        )
+            komgaMetadataServiceProvider = createMetadataServiceProvider(
+                config = komgaConfig.metadataUpdate,
+                mediaServerClient = komgaClient,
+                seriesThumbnailsRepository = komgaSerThumbnailsRepository,
+                bookThumbnailsRepository = komgaBookThumbnailRepository,
+                seriesMatchRepository = komgaSeriesMatchRepository,
+            )
 
-        komgaEventHandler = KomgaEventHandler(
-            eventSourceFactory = { komgaClientFactory.sseSession() },
-            eventListeners = listOfNotNull(komgaMetadataEventHandler, komgaNotificationsHandler),
-        )
+            val komgaMetadataEventHandler = MetadataEventHandler(
+                metadataServiceProvider = komgaMetadataServiceProvider,
+                bookThumbnailsRepository = komgaBookThumbnailRepository,
+                seriesThumbnailsRepository = komgaSerThumbnailsRepository,
+                seriesMatchRepository = komgaSeriesMatchRepository,
+                jobTracker = jobTracker,
+                libraryFilter = {
+                    val libraries = komgaConfig.eventListener.metadataLibraryFilter
+                    if (libraries.isEmpty()) true
+                    else libraries.contains(it)
+                },
+                seriesFilter = { seriesId -> komgaConfig.eventListener.metadataSeriesExcludeFilter.none { seriesId == it } },
+            )
+            val komgaNotificationsHandler = NotificationsEventHandler(
+                mediaServerClient = komgaClient,
+                appriseService = appriseService,
+                discordWebhookService = discordWebhookService,
+                libraryFilter = {
+                    val libraries = komgaConfig.eventListener.notificationsLibraryFilter
+                    if (libraries.isEmpty()) true
+                    else libraries.contains(it)
+                },
+                mediaServer = MediaServer.KOMGA
+            )
+
+            komgaEventHandler = KomgaEventHandler(
+                eventSourceFactory = { komgaClientFactory.sseSession() },
+                eventListeners = listOfNotNull(komgaMetadataEventHandler, komgaNotificationsHandler),
+            )
+        } else {
+            komgaClient = DisabledMediaServerClient(
+                mediaServerName = "KOMGA",
+                reason = "server.kavitaOnly=true"
+            )
+            komgaMetadataServiceProvider = createMetadataServiceProvider(
+                config = komgaConfig.metadataUpdate,
+                mediaServerClient = komgaClient,
+                seriesThumbnailsRepository = komgaSerThumbnailsRepository,
+                bookThumbnailsRepository = komgaBookThumbnailRepository,
+                seriesMatchRepository = komgaSeriesMatchRepository,
+            )
+            komgaEventHandler = null
+        }
 
 
         kavitaBookThumbnailRepository = BookThumbnailsRepository(
@@ -197,14 +214,26 @@ class MediaServerModule(
                 bearer { loadTokens { BearerTokens(kavitaTokenProvider.getToken(), null) } }
             }
         }
-        kavitaClient = KavitaClient(kavitaKtorClient, jsonBase, kavitaConfig.apiKey)
-        kavitaMediaServerClient = KavitaMediaServerClientAdapter(kavitaClient)
+        kavitaClient = KavitaClient(
+            kavitaKtorClient,
+            jsonBase,
+            kavitaConfig.apiKey,
+            updateEventsPerMinute = kavitaConfig.apiRateLimit.updateEventsPerMinute,
+            scanEventsPerMinute = kavitaConfig.apiRateLimit.scanEventsPerMinute
+        )
+        kavitaApiCompatibilityChecker = KavitaApiCompatibilityChecker(kavitaClient)
+        kavitaMediaServerClient = KavitaMediaServerClientAdapter(
+            kavitaClient = kavitaClient,
+            deferredLibraryScanDelayMs = kavitaConfig.scan.deferredLibraryScanDelaySeconds
+                .coerceAtLeast(0)
+                .times(1000)
+        )
         kavitaMetadataServiceProvider = createMetadataServiceProvider(
             config = kavitaConfig.metadataUpdate,
             mediaServerClient = kavitaMediaServerClient,
-            seriesThumbnailsRepository = komgaSerThumbnailsRepository,
-            bookThumbnailsRepository = komgaBookThumbnailRepository,
-            seriesMatchRepository = komgaSeriesMatchRepository,
+            seriesThumbnailsRepository = kavitaSerThumbnailsRepository,
+            bookThumbnailsRepository = kavitaBookThumbnailRepository,
+            seriesMatchRepository = kavitaSeriesMatchRepository,
         )
         kavitaMetadataEventHandler = MetadataEventHandler(
             metadataServiceProvider = kavitaMetadataServiceProvider,
@@ -241,13 +270,13 @@ class MediaServerModule(
         if (kavitaConfig.eventListener.enabled) {
             kavitaEventHandler.start()
         }
-        if (komgaConfig.eventListener.enabled) {
-            komgaEventHandler.start()
+        if (!kavitaOnly && komgaConfig.eventListener.enabled) {
+            komgaEventHandler?.start()
         }
     }
 
     fun close() {
-        komgaEventHandler.stop()
+        komgaEventHandler?.stop()
         kavitaEventHandler.stop()
     }
 
@@ -353,7 +382,8 @@ class MediaServerModule(
             uploadBookCovers = config.bookCovers,
             uploadSeriesCovers = config.seriesCovers,
             overrideExistingCovers = config.overrideExistingCovers,
-            lockCovers = config.lockCovers,
+            lockSeriesCover = config.lockSeriesCover,
+            lockVolumeCover = config.lockVolumeCover,
         )
     }
 

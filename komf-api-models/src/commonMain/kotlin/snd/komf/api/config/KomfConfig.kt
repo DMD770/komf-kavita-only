@@ -48,7 +48,8 @@ data class MetadataProcessingConfigDto(
     val bookCovers: Boolean,
     val seriesCovers: Boolean,
     val overrideExistingCovers: Boolean,
-    val lockCovers: Boolean,
+    val lockSeriesCover: Boolean,
+    val lockVolumeCover: Boolean,
 
     val updateModes: List<KomfUpdateMode>,
     val postProcessing: MetadataPostProcessingConfigDto

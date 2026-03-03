@@ -13,6 +13,7 @@ import io.ktor.server.plugins.cors.routing.CORS
 import io.ktor.server.plugins.defaultheaders.DefaultHeaders
 import io.ktor.server.plugins.statuspages.StatusPages
 import io.ktor.server.response.respond
+import io.ktor.server.routing.get
 import io.ktor.server.routing.route
 import io.ktor.server.routing.routing
 import io.ktor.server.sse.SSE
@@ -20,11 +21,15 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.map
 import kotlinx.serialization.json.Json
 import snd.komf.api.KomfErrorResponse
+import snd.komf.api.mediaserver.KomfMediaServerConnectionResponse
+import snd.komf.api.mediaserver.KomfMediaServerLibrary
 import snd.komf.app.api.ConfigRoutes
 import snd.komf.app.api.JobRoutes
+import snd.komf.app.api.KavitaHealthRoutes
 import snd.komf.app.api.MediaServerRoutes
 import snd.komf.app.api.MetadataRoutes
 import snd.komf.app.api.NotificationRoutes
+import snd.komf.app.api.RequestRateLimiter
 import snd.komf.app.api.deprecated.DeprecatedConfigRoutes
 import snd.komf.app.api.deprecated.DeprecatedConfigUpdateMapper
 import snd.komf.app.api.deprecated.DeprecatedMetadataRoutes
@@ -33,6 +38,7 @@ import snd.komf.mediaserver.MediaServerClient
 import snd.komf.mediaserver.MetadataServiceProvider
 import snd.komf.mediaserver.jobs.KomfJobTracker
 import snd.komf.mediaserver.jobs.KomfJobsRepository
+import snd.komf.mediaserver.kavita.KavitaApiCompatibilityChecker
 import snd.komf.mediaserver.model.MediaServer.KAVITA
 import snd.komf.mediaserver.model.MediaServer.KOMGA
 import snd.komf.notifications.apprise.AppriseCliService
@@ -44,6 +50,7 @@ import snd.komf.providers.mangabaka.db.MangaBakaDbMetadata
 
 class ServerModule(
     serverPort: Int,
+    private val kavitaOnly: Boolean,
     private val onConfigUpdate: suspend (AppConfig) -> Unit,
     private val dynamicDependencies: StateFlow<ApiDynamicDependencies>,
 ) {
@@ -112,25 +119,51 @@ class ServerModule(
                     appriseRenderer = dynamicDependencies.map { it.appriseRenderer }
                 ).registerRoutes(this)
 
-                route("/komga") {
-                    MetadataRoutes(
-                        metadataServiceProvider = dynamicDependencies.map { it.komgaMetadataServiceProvider },
-                        mediaServerClient = dynamicDependencies.map { it.komgaMediaServerClient },
-                    ).registerRoutes(this)
+                if (!kavitaOnly) {
+                    route("/komga") {
+                        MetadataRoutes(
+                            metadataServiceProvider = dynamicDependencies.map { it.komgaMetadataServiceProvider },
+                            mediaServerClient = dynamicDependencies.map { it.komgaMediaServerClient },
+                            requestRateLimiter = dynamicDependencies.map { it.metadataRequestRateLimiter },
+                        ).registerRoutes(this)
 
-                    MediaServerRoutes(
-                        mediaServerClient = dynamicDependencies.map { it.komgaMediaServerClient }
-                    ).registerRoutes(this)
+                        MediaServerRoutes(
+                            mediaServerClient = dynamicDependencies.map { it.komgaMediaServerClient }
+                        ).registerRoutes(this)
+                    }
+                } else {
+                    route("/komga") {
+                        route("/media-server") {
+                            get("/connected") {
+                                call.respond(
+                                    HttpStatusCode.OK,
+                                    KomfMediaServerConnectionResponse(
+                                        success = false,
+                                        httpStatusCode = null,
+                                        errorMessage = "Komga integration disabled in kavitaOnly mode"
+                                    )
+                                )
+                            }
+                            get("/libraries") {
+                                call.respond(HttpStatusCode.OK, emptyList<KomfMediaServerLibrary>())
+                            }
+                        }
+                    }
                 }
 
                 route("/kavita") {
                     MetadataRoutes(
                         metadataServiceProvider = dynamicDependencies.map { it.kavitaMetadataServiceProvider },
                         mediaServerClient = dynamicDependencies.map { it.kavitaMediaServerClient },
+                        requestRateLimiter = dynamicDependencies.map { it.metadataRequestRateLimiter },
                     ).registerRoutes(this)
 
                     MediaServerRoutes(
                         mediaServerClient = dynamicDependencies.map { it.kavitaMediaServerClient }
+                    ).registerRoutes(this)
+
+                    KavitaHealthRoutes(
+                        compatibilityChecker = dynamicDependencies.map { it.kavitaApiCompatibilityChecker }
                     ).registerRoutes(this)
                 }
             }
@@ -144,16 +177,20 @@ class ServerModule(
             configMapper = configMapper
         ).registerRoutes(application)
 
-        DeprecatedMetadataRoutes(
-            metadataServiceProvider = dynamicDependencies.map { it.komgaMetadataServiceProvider },
-            mediaServerClient = dynamicDependencies.map { it.komgaMediaServerClient },
-            jobTracker = dynamicDependencies.map { it.jobTracker },
-            serverType = KOMGA
-        ).registerRoutes(application)
+        if (!kavitaOnly) {
+            DeprecatedMetadataRoutes(
+                metadataServiceProvider = dynamicDependencies.map { it.komgaMetadataServiceProvider },
+                mediaServerClient = dynamicDependencies.map { it.komgaMediaServerClient },
+                jobTracker = dynamicDependencies.map { it.jobTracker },
+                requestRateLimiter = dynamicDependencies.map { it.metadataRequestRateLimiter },
+                serverType = KOMGA
+            ).registerRoutes(application)
+        }
         DeprecatedMetadataRoutes(
             metadataServiceProvider = dynamicDependencies.map { it.kavitaMetadataServiceProvider },
             mediaServerClient = dynamicDependencies.map { it.kavitaMediaServerClient },
             jobTracker = dynamicDependencies.map { it.jobTracker },
+            requestRateLimiter = dynamicDependencies.map { it.metadataRequestRateLimiter },
             serverType = KAVITA
         ).registerRoutes(application)
     }
@@ -171,10 +208,12 @@ class ApiDynamicDependencies(
     val komgaMetadataServiceProvider: MetadataServiceProvider,
     val kavitaMediaServerClient: MediaServerClient,
     val kavitaMetadataServiceProvider: MetadataServiceProvider,
+    val kavitaApiCompatibilityChecker: KavitaApiCompatibilityChecker,
     val discordService: DiscordWebhookService,
     val discordRenderer: DiscordVelocityTemplates,
     val appriseService: AppriseCliService,
     val appriseRenderer: AppriseVelocityTemplates,
     val mangaBakaDownloader: MangaBakaDbDownloader,
-    val mangaBakaDbMetadata: MangaBakaDbMetadata
+    val mangaBakaDbMetadata: MangaBakaDbMetadata,
+    val metadataRequestRateLimiter: RequestRateLimiter
 )

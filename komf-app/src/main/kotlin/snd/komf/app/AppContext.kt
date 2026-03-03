@@ -9,10 +9,13 @@ import io.ktor.client.HttpClient
 import io.ktor.client.engine.okhttp.OkHttp
 import io.ktor.client.plugins.UserAgent
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.serialization.json.Json
 import okhttp3.Cache
 import okhttp3.OkHttpClient
@@ -22,6 +25,7 @@ import snd.komf.CoreModule
 import snd.komf.app.config.AppConfig
 import snd.komf.app.config.ConfigLoader
 import snd.komf.app.config.ConfigWriter
+import snd.komf.app.api.RequestRateLimiter
 import snd.komf.ktor.komfUserAgent
 import snd.komf.mediaserver.MediaServerModule
 import snd.komf.notifications.NotificationsModule
@@ -38,6 +42,7 @@ class AppContext(private val configPath: Path? = null) {
         private set
 
     private val reloadMutex = Mutex()
+    private val appScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
     private val ktorBaseClient: HttpClient
     private val jsonBase: Json
@@ -61,6 +66,7 @@ class AppContext(private val configPath: Path? = null) {
     init {
         val config = loadConfig()
         setLogLevel(config)
+        logEffectiveConfig(config)
         appConfig = config
 
         val httpLogger = KotlinLogging.logger("http.logging")
@@ -101,6 +107,7 @@ class AppContext(private val configPath: Path? = null) {
         mediaServerModule = MediaServerModule(
             komgaConfig = config.komga,
             kavitaConfig = config.kavita,
+            kavitaOnly = config.server.kavitaOnly,
             databaseConfig = config.database,
             jsonBase = jsonBase,
             ktorBaseClient = ktorBaseClient,
@@ -112,10 +119,12 @@ class AppContext(private val configPath: Path? = null) {
 
         serverModule = ServerModule(
             serverPort = config.server.port,
+            kavitaOnly = config.server.kavitaOnly,
             onConfigUpdate = this::refreshState,
             dynamicDependencies = apiRoutesDependencies,
         )
 
+        runKavitaCompatibilityCheckAsync()
         serverModule.startServer()
     }
 
@@ -145,6 +154,7 @@ class AppContext(private val configPath: Path? = null) {
         val mediaServerModule = MediaServerModule(
             komgaConfig = config.komga,
             kavitaConfig = config.kavita,
+            kavitaOnly = config.server.kavitaOnly,
             databaseConfig = config.database,
             jsonBase = jsonBase,
             ktorBaseClient = ktorBaseClient,
@@ -159,6 +169,7 @@ class AppContext(private val configPath: Path? = null) {
         this.notificationsModule = notificationsModule
         this.mediaServerModule = mediaServerModule
         apiRoutesDependencies.value = createApiRoutesDependencies()
+        runKavitaCompatibilityCheckAsync()
     }
 
     private fun createApiRoutesDependencies() = ApiDynamicDependencies(
@@ -169,12 +180,16 @@ class AppContext(private val configPath: Path? = null) {
         komgaMetadataServiceProvider = mediaServerModule.komgaMetadataServiceProvider,
         kavitaMediaServerClient = mediaServerModule.kavitaMediaServerClient,
         kavitaMetadataServiceProvider = mediaServerModule.kavitaMetadataServiceProvider,
+        kavitaApiCompatibilityChecker = mediaServerModule.kavitaApiCompatibilityChecker,
         discordService = notificationsModule.discordWebhookService,
         discordRenderer = notificationsModule.discordVelocityRenderer,
         appriseService = notificationsModule.appriseService,
         appriseRenderer = notificationsModule.appriseVelocityRenderer,
         mangaBakaDownloader = providersModule.mangaBakaDatabaseDownloader,
-        mangaBakaDbMetadata = providersModule.mangaBakaDbMetadata
+        mangaBakaDbMetadata = providersModule.mangaBakaDbMetadata,
+        metadataRequestRateLimiter = RequestRateLimiter(
+            requestsPerMinute = this.appConfig.server.metadataRequestsPerMinute
+        )
     )
 
     private suspend fun writeConfig(config: AppConfig) {
@@ -188,6 +203,15 @@ class AppContext(private val configPath: Path? = null) {
         mediaServerModule.close()
     }
 
+    private fun runKavitaCompatibilityCheckAsync() {
+        appScope.launch {
+            runCatching { mediaServerModule.kavitaApiCompatibilityChecker.runChecksAndLog() }
+                .onFailure {
+                    logger.warn(it) { "Kavita API compatibility check failed to execute (startup not blocked)" }
+                }
+        }
+    }
+
     private fun loadConfig(): AppConfig {
         return when {
             configPath == null -> configLoader.default()
@@ -199,5 +223,22 @@ class AppContext(private val configPath: Path? = null) {
     private fun setLogLevel(config: AppConfig) {
         val rootLogger = LoggerFactory.getLogger(org.slf4j.Logger.ROOT_LOGGER_NAME) as Logger
         rootLogger.level = Level.valueOf(config.logLevel.uppercase())
+    }
+
+    private fun logEffectiveConfig(config: AppConfig) {
+        logger.info {
+            buildString {
+                append("Effective config: ")
+                append("server.port=${config.server.port}, ")
+                append("server.kavitaOnly=${config.server.kavitaOnly}, ")
+                append("server.metadataRequestsPerMinute=${config.server.metadataRequestsPerMinute}, ")
+                append("kavita.baseUri=${config.kavita.baseUri}, ")
+                append("kavita.apiRateLimit.updateEventsPerMinute=${config.kavita.apiRateLimit.updateEventsPerMinute}, ")
+                append("kavita.apiRateLimit.scanEventsPerMinute=${config.kavita.apiRateLimit.scanEventsPerMinute}, ")
+                append("kavita.scan.deferredLibraryScanDelaySeconds=${config.kavita.scan.deferredLibraryScanDelaySeconds}, ")
+                append("logLevel=${config.logLevel}, ")
+                append("httpLogLevel=${config.httpLogLevel}")
+            }
+        }
     }
 }

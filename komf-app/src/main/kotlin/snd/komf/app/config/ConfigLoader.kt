@@ -63,9 +63,22 @@ class ConfigLoader(private val yaml: Yaml) {
         val kavitaConfig = config.kavita
         val kavitaBaseUri = System.getenv("KOMF_KAVITA_BASE_URI")?.ifBlank { null } ?: kavitaConfig.baseUri
         val kavitaApiKey = System.getenv("KOMF_KAVITA_API_KEY")?.ifBlank { null } ?: kavitaConfig.apiKey
+        val kavitaUpdateEventsPerMinute = System.getenv("KOMF_KAVITA_API_RATE_LIMIT_UPDATE_EVENTS_PER_MINUTE")
+            ?.toIntOrNull()
+            ?: kavitaConfig.apiRateLimit.updateEventsPerMinute
+        val kavitaScanEventsPerMinute = System.getenv("KOMF_KAVITA_API_RATE_LIMIT_SCAN_EVENTS_PER_MINUTE")
+            ?.toIntOrNull()
+            ?: kavitaConfig.apiRateLimit.scanEventsPerMinute
+        val kavitaDeferredLibraryScanDelaySeconds = System.getenv("KOMF_KAVITA_SCAN_DEFERRED_LIBRARY_SCAN_DELAY_SECONDS")
+            ?.toLongOrNull()
+            ?: kavitaConfig.scan.deferredLibraryScanDelaySeconds
 
         val serverConfig = config.server
         val serverPort = System.getenv("KOMF_SERVER_PORT")?.toIntOrNull() ?: serverConfig.port
+        val serverKavitaOnly = System.getenv("KOMF_SERVER_KAVITA_ONLY")?.toBooleanStrictOrNull() ?: serverConfig.kavitaOnly
+        val serverMetadataRequestsPerMinute = System.getenv("KOMF_SERVER_METADATA_REQUESTS_PER_MINUTE")
+            ?.toIntOrNull()
+            ?: serverConfig.metadataRequestsPerMinute
         val logLevel = System.getenv("KOMF_LOG_LEVEL")?.ifBlank { null } ?: config.logLevel
 
         val metadataProvidersConfig = config.metadataProviders
@@ -87,6 +100,13 @@ class ConfigLoader(private val yaml: Yaml) {
             kavita = kavitaConfig.copy(
                 baseUri = kavitaBaseUri,
                 apiKey = kavitaApiKey,
+                apiRateLimit = kavitaConfig.apiRateLimit.copy(
+                    updateEventsPerMinute = kavitaUpdateEventsPerMinute,
+                    scanEventsPerMinute = kavitaScanEventsPerMinute
+                ),
+                scan = kavitaConfig.scan.copy(
+                    deferredLibraryScanDelaySeconds = kavitaDeferredLibraryScanDelaySeconds
+                )
             ),
 
             database = databaseConfig.copy(
@@ -107,7 +127,11 @@ class ConfigLoader(private val yaml: Yaml) {
                     webhooks = discordWebhooks
                 )
             ),
-            server = serverConfig.copy(port = serverPort),
+            server = serverConfig.copy(
+                port = serverPort,
+                kavitaOnly = serverKavitaOnly,
+                metadataRequestsPerMinute = serverMetadataRequestsPerMinute
+            ),
             logLevel = logLevel
         )
     }

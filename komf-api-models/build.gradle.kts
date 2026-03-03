@@ -16,12 +16,12 @@ group = "io.github.snd-r"
 version = libs.versions.app.version.get()
 
 kotlin {
-    jvmToolchain(17)
+    jvmToolchain(21)
     androidTarget {
-        compilerOptions { jvmTarget.set(JvmTarget.JVM_17) }
+        compilerOptions { jvmTarget.set(JvmTarget.JVM_21) }
         publishLibraryVariants("release")
     }
-    jvm { compilerOptions { jvmTarget.set(JvmTarget.JVM_17) } }
+    jvm { compilerOptions { jvmTarget.set(JvmTarget.JVM_21) } }
     @OptIn(ExperimentalWasmDsl::class)
     wasmJs {
         outputModuleName = "komf-api-models"
@@ -56,7 +56,9 @@ android {
 mavenPublishing {
     publishToMavenCentral( automaticRelease = false)
     coordinates("io.github.snd-r.komf", "api-models", libs.versions.app.version.get())
-    signAllPublications()
+    if (providers.gradleProperty("enableSigning").orNull == "true") {
+        signAllPublications()
+    }
 
     pom {
         name.set("Komf API models")
@@ -84,5 +86,7 @@ mavenPublishing {
     }
 }
 signing {
-    useGpgCmd()
+    if (providers.gradleProperty("enableSigning").orNull == "true") {
+        useGpgCmd()
+    }
 }

@@ -117,7 +117,8 @@ class DeprecatedConfigUpdateMapper {
             bookCovers = config.bookCovers,
             seriesCovers = config.seriesCovers,
             overrideExistingCovers = config.overrideExistingCovers,
-            lockCovers = config.lockCovers,
+            lockSeriesCover = config.lockSeriesCover,
+            lockVolumeCover = config.lockVolumeCover,
             updateModes = config.updateModes,
             postProcessing = toDto(config.postProcessing),
         )
@@ -549,7 +550,8 @@ class DeprecatedConfigUpdateMapper {
             postProcessing = patch.postProcessing
                 ?.let { metadataPostProcessingConfig(config.postProcessing, it) }
                 ?: config.postProcessing,
-            lockCovers = patch.lockCovers ?: config.lockCovers
+            lockSeriesCover = patch.lockSeriesCover ?: config.lockSeriesCover,
+            lockVolumeCover = patch.lockVolumeCover ?: config.lockVolumeCover
         )
     }
 

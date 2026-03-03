@@ -216,8 +216,10 @@ class KomgaMediaServerClientAdapter(
         )
     }
 
-    override suspend fun refreshMetadata(libraryId: MediaServerLibraryId, seriesId: MediaServerSeriesId) {
-        komgaSeriesClient.analyze(KomgaSeriesId(seriesId.value))
+    override suspend fun refreshMetadata(libraryId: MediaServerLibraryId, seriesId: MediaServerSeriesId, deferScan: Boolean) {
+        if (!deferScan) {
+            komgaSeriesClient.analyze(KomgaSeriesId(seriesId.value))
+        }
     }
 
     private fun KomgaSeries.toMediaServerSeries(): MediaServerSeries {

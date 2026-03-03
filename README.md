@@ -51,6 +51,11 @@ services:
       - KOMF_KOMGA_PASSWORD=admin
       - KOMF_KAVITA_BASE_URI=http://kavita:5000
       - KOMF_KAVITA_API_KEY=16707507-d05d-4696-b126-c3976ae14ffb
+      - KOMF_KAVITA_API_RATE_LIMIT_UPDATE_EVENTS_PER_MINUTE=120
+      - KOMF_KAVITA_API_RATE_LIMIT_SCAN_EVENTS_PER_MINUTE=30
+      - KOMF_KAVITA_SCAN_DEFERRED_LIBRARY_SCAN_DELAY_SECONDS=120
+      - KOMF_SERVER_KAVITA_ONLY=true
+      - KOMF_SERVER_METADATA_REQUESTS_PER_MINUTE=0
       - KOMF_LOG_LEVEL=INFO
       # optional jvm options. Example config for low memory usage. Runs guaranteed cleanup up every 3600000ms(1hour)
       - JAVA_TOOL_OPTIONS=-XX:+UnlockExperimentalVMOptions -XX:+UseShenandoahGC -XX:ShenandoahGCHeuristics=compact -XX:ShenandoahGuaranteedGCInterval=3600000 -XX:TrimNativeHeapInterval=3600000
@@ -71,6 +76,11 @@ docker create \
   -e KOMF_KOMGA_PASSWORD=admin \
   -e KOMF_KAVITA_BASE_URI=http://kavita:5000 \
   -e KOMF_KAVITA_API_KEY=16707507-d05d-4696-b126-c3976ae14ffb \
+  -e KOMF_KAVITA_API_RATE_LIMIT_UPDATE_EVENTS_PER_MINUTE=120 \
+  -e KOMF_KAVITA_API_RATE_LIMIT_SCAN_EVENTS_PER_MINUTE=30 \
+  -e KOMF_KAVITA_SCAN_DEFERRED_LIBRARY_SCAN_DELAY_SECONDS=120 \
+  -e KOMF_SERVER_KAVITA_ONLY=true \
+  -e KOMF_SERVER_METADATA_REQUESTS_PER_MINUTE=0 \
   -e KOMF_LOG_LEVEL=INFO \
   -v /path/to/config:/config \
   --restart unless-stopped \
@@ -130,6 +140,11 @@ komga:
 kavita:
   baseUri: "http://localhost:5000" #or env:KOMF_KAVITA_BASE_URI
   apiKey: "16707507-d05d-4696-b126-c3976ae14ffb" #or env:KOMF_KAVITA_API_KEY
+  apiRateLimit:
+    updateEventsPerMinute: 120 #or env:KOMF_KAVITA_API_RATE_LIMIT_UPDATE_EVENTS_PER_MINUTE
+    scanEventsPerMinute: 30 #or env:KOMF_KAVITA_API_RATE_LIMIT_SCAN_EVENTS_PER_MINUTE
+  scan:
+    deferredLibraryScanDelaySeconds: 120 #or env:KOMF_KAVITA_SCAN_DEFERRED_LIBRARY_SCAN_DELAY_SECONDS
   eventListener:
     enabled: false # if disabled will not connect to kavita and won't pick up newly added entries
     metadataLibraryFilter: [ ]  # listen to all events if empty
@@ -238,6 +253,8 @@ metadataProviders:
 
 server:
   port: 8085 # or env:KOMF_SERVER_PORT
+  kavitaOnly: true # or env:KOMF_SERVER_KAVITA_ONLY. If true, Komga routes are disabled.
+  metadataRequestsPerMinute: 0 # or env:KOMF_SERVER_METADATA_REQUESTS_PER_MINUTE. 0 disables limiter.
 
 logLevel: INFO # or env:KOMF_LOG_LEVEL
 ```
@@ -492,6 +509,7 @@ Use the following HTTP endpoint to set series metadata from specified provider:
 - `POST /{media-server}/match/library/{libraryId}/series/{seriesId}`: Attempts to match the specified series in the
   specified library.
 - `POST /{media-server}/match/library/{libraryId}`: Attempts to match all series in the specified library.
+  Optional query `dryRun=true` will only log planned matches/updates without writing metadata or triggering scans.
 - `POST /{media-server}/reset/library/{libraryId}/series/{seriesId}`: Resets all metadata for the specified series in
   the specified library.
 - `POST /{media-server}/reset/library/{libraryId}`: Resets all metadata for all series in the specified library.

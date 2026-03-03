@@ -1,5 +1,6 @@
 package snd.komf.mediaserver.kavita
 
+import kotlinx.coroutines.delay
 import kotlinx.datetime.LocalTime
 import kotlinx.datetime.atTime
 import snd.komf.mediaserver.MediaServerClient
@@ -44,7 +45,10 @@ import snd.komf.model.WebLink
 import java.nio.file.Path
 import kotlin.io.path.nameWithoutExtension
 
-class KavitaMediaServerClientAdapter(private val kavitaClient: KavitaClient) : MediaServerClient {
+class KavitaMediaServerClientAdapter(
+    private val kavitaClient: KavitaClient,
+    private val deferredLibraryScanDelayMs: Long = 120_000L,
+) : MediaServerClient {
 
     override suspend fun getSeries(seriesId: MediaServerSeriesId): MediaServerSeries {
         val kavitaSeriesId = seriesId.toKavitaSeriesId()
@@ -170,9 +174,25 @@ class KavitaMediaServerClientAdapter(private val kavitaClient: KavitaClient) : M
         return null
     }
 
-    override suspend fun refreshMetadata(libraryId: MediaServerLibraryId, seriesId: MediaServerSeriesId) {
-        kavitaClient.scanLibrary(libraryId.toKavitaLibraryId())
-        kavitaClient.scanSeries(seriesId.toKavitaSeriesId())
+    override suspend fun refreshMetadata(libraryId: MediaServerLibraryId, seriesId: MediaServerSeriesId, deferScan: Boolean) {
+        if (!deferScan) {
+            val kavitaLibraryId = libraryId.toKavitaLibraryId()
+            kavitaClient.scanSeries(kavitaLibraryId, seriesId.toKavitaSeriesId())
+        }
+    }
+
+    suspend fun executeDeferredScans(scans: Collection<Pair<MediaServerLibraryId, MediaServerSeriesId>>) {
+        val groupedByLibrary = scans.groupBy(
+            keySelector = { (libraryId, _) -> libraryId },
+            valueTransform = { (_, _) -> Unit }
+        )
+
+        groupedByLibrary.forEach { (libraryId, _) ->
+            val kavitaLibraryId = libraryId.toKavitaLibraryId()
+            // Library-wide/deferred run: trigger a single library scan at end.
+            delay(deferredLibraryScanDelayMs.coerceAtLeast(0))
+            kavitaClient.scanLibrary(kavitaLibraryId)
+        }
     }
 }
 
@@ -394,26 +414,26 @@ private fun MediaServerSeriesMetadataUpdate.toKavitaSeriesMetadataUpdate(current
         locations = currentMetadata.locations,
         maxCount = currentMetadata.maxCount,
         totalCount = currentMetadata.totalCount,
-        languageLocked = currentMetadata.languageLocked,
-        summaryLocked = currentMetadata.summaryLocked,
-        ageRatingLocked = currentMetadata.ageRatingLocked,
-        publicationStatusLocked = currentMetadata.publicationStatusLocked,
-        genresLocked = currentMetadata.genresLocked,
-        tagsLocked = currentMetadata.tagsLocked,
-        writerLocked = currentMetadata.writerLocked,
+        languageLocked = languageLock ?: currentMetadata.languageLocked,
+        summaryLocked = summaryLock ?: currentMetadata.summaryLocked,
+        ageRatingLocked = ageRatingLock ?: currentMetadata.ageRatingLocked,
+        publicationStatusLocked = statusLock ?: currentMetadata.publicationStatusLocked,
+        genresLocked = genresLock ?: currentMetadata.genresLocked,
+        tagsLocked = tagsLock ?: currentMetadata.tagsLocked,
+        writerLocked = authorsLock ?: currentMetadata.writerLocked,
         characterLocked = currentMetadata.characterLocked,
-        coloristLocked = currentMetadata.coloristLocked,
-        editorLocked = currentMetadata.editorLocked,
-        inkerLocked = currentMetadata.inkerLocked,
+        coloristLocked = authorsLock ?: currentMetadata.coloristLocked,
+        editorLocked = authorsLock ?: currentMetadata.editorLocked,
+        inkerLocked = authorsLock ?: currentMetadata.inkerLocked,
         imprintLocked = currentMetadata.imprintLocked,
-        lettererLocked = currentMetadata.lettererLocked,
-        pencillerLocked = currentMetadata.pencillerLocked,
-        publisherLocked = currentMetadata.publisherLocked,
-        translatorLocked = currentMetadata.translatorLocked,
+        lettererLocked = authorsLock ?: currentMetadata.lettererLocked,
+        pencillerLocked = authorsLock ?: currentMetadata.pencillerLocked,
+        publisherLocked = publisherLock ?: currentMetadata.publisherLocked,
+        translatorLocked = authorsLock ?: currentMetadata.translatorLocked,
         teamLocked = currentMetadata.teamLocked,
         locationLocked = currentMetadata.locationLocked,
-        coverArtistLocked = currentMetadata.coverArtistLocked,
-        releaseYearLocked = currentMetadata.releaseYearLocked
+        coverArtistLocked = authorsLock ?: currentMetadata.coverArtistLocked,
+        releaseYearLocked = releaseYearLock ?: currentMetadata.releaseYearLocked
     )
     return KavitaSeriesMetadataUpdateRequest(metadata)
 }
@@ -550,26 +570,25 @@ private fun MediaServerBookMetadataUpdate.toKavitaChapterMetadataUpdate(currentC
         locations = currentChapter.locations,
         ageRatingLocked = currentChapter.ageRatingLocked,
         genresLocked = currentChapter.genresLocked,
-        tagsLocked = currentChapter.tagsLocked,
-        writerLocked = currentChapter.writerLocked,
+        tagsLocked = tagsLock ?: currentChapter.tagsLocked,
+        writerLocked = authorsLock ?: currentChapter.writerLocked,
         characterLocked = currentChapter.characterLocked,
-        coloristLocked = currentChapter.coloristLocked,
-        editorLocked = currentChapter.editorLocked,
-        inkerLocked = currentChapter.inkerLocked,
+        coloristLocked = authorsLock ?: currentChapter.coloristLocked,
+        editorLocked = authorsLock ?: currentChapter.editorLocked,
+        inkerLocked = authorsLock ?: currentChapter.inkerLocked,
         imprintLocked = currentChapter.imprintLocked,
-        lettererLocked = currentChapter.lettererLocked,
-        pencillerLocked = currentChapter.pencillerLocked,
+        lettererLocked = authorsLock ?: currentChapter.lettererLocked,
+        pencillerLocked = authorsLock ?: currentChapter.pencillerLocked,
         publisherLocked = currentChapter.publisherLocked,
-        translatorLocked = currentChapter.translatorLocked,
+        translatorLocked = authorsLock ?: currentChapter.translatorLocked,
         teamLocked = currentChapter.teamLocked,
         locationLocked = currentChapter.locationLocked,
-        coverArtistLocked = currentChapter.coverArtistLocked,
+        coverArtistLocked = authorsLock ?: currentChapter.coverArtistLocked,
         languageLocked = currentChapter.languageLocked,
-        summaryLocked = currentChapter.summaryLocked,
-        // TODO
-        titleNameLocked = false,
-        isbnLocked = false,
-        releaseDateLocked = false,
-        sortOrderLocked = false
+        summaryLocked = summaryLock ?: currentChapter.summaryLocked,
+        titleNameLocked = titleLock ?: currentChapter.titleNameLocked,
+        isbnLocked = isbnLock ?: currentChapter.isbnLocked,
+        releaseDateLocked = releaseDateLock ?: currentChapter.releaseDateLocked,
+        sortOrderLocked = numberSortLock ?: currentChapter.sortOrderLocked
     )
 }

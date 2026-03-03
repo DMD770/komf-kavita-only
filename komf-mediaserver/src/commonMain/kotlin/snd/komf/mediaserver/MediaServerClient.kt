@@ -48,6 +48,6 @@ interface MediaServerClient {
         lock: Boolean = false
     ): MediaServerBookThumbnail?
 
-    suspend fun refreshMetadata(libraryId: MediaServerLibraryId, seriesId: MediaServerSeriesId)
+    suspend fun refreshMetadata(libraryId: MediaServerLibraryId, seriesId: MediaServerSeriesId, deferScan: Boolean = false)
 
 }

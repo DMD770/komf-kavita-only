@@ -384,7 +384,8 @@ class AppConfigUpdateMapper {
             bookCovers = patch.bookCovers.getOrNull() ?: config.bookCovers,
             seriesCovers = patch.seriesCovers.getOrNull() ?: config.seriesCovers,
             overrideExistingCovers = patch.overrideExistingCovers.getOrNull() ?: config.overrideExistingCovers,
-            lockCovers = patch.lockCovers.getOrNull() ?: config.lockCovers,
+            lockSeriesCover = patch.lockSeriesCover.getOrNull() ?: config.lockSeriesCover,
+            lockVolumeCover = patch.lockVolumeCover.getOrNull() ?: config.lockVolumeCover,
             updateModes = patch.updateModes.getOrNull()?.map { it.toUpdateMode() } ?: config.updateModes,
             postProcessing = patch.postProcessing.getOrNull()
                 ?.let { metadataPostProcessingConfig(config.postProcessing, it) }

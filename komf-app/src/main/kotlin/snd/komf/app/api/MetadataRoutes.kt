@@ -35,6 +35,7 @@ private val logger = KotlinLogging.logger {}
 class MetadataRoutes(
     private val metadataServiceProvider: Flow<MetadataServiceProvider>,
     private val mediaServerClient: Flow<MediaServerClient>,
+    private val requestRateLimiter: Flow<RequestRateLimiter>,
 ) {
 
     fun registerRoutes(routing: Route) {
@@ -54,6 +55,7 @@ class MetadataRoutes(
 
     private fun Route.getProvidersRoute() {
         get("/providers") {
+            if (!call.checkRateLimit()) return@get
             val libraryId = call.request.queryParameters["libraryId"]?.let { MediaServerLibraryId(it) }
 
             val providers = (
@@ -69,6 +71,7 @@ class MetadataRoutes(
 
     private fun Route.searchSeriesRoute() {
         get("/search") {
+            if (!call.checkRateLimit()) return@get
             val seriesName = call.request.queryParameters["name"]
                 ?: return@get call.response.status(HttpStatusCode.BadRequest)
 
@@ -108,6 +111,7 @@ class MetadataRoutes(
 
     private fun Route.getSeriesCoverRoute() {
         get("/series-cover") {
+            if (!call.checkRateLimit()) return@get
             val libraryId = MediaServerLibraryId(call.request.queryParameters.getOrFail("libraryId"))
             val provider = CoreProviders.valueOf(call.request.queryParameters.getOrFail("provider"))
             val providerSeriesId = ProviderSeriesId(call.request.queryParameters.getOrFail("providerSeriesId"))
@@ -126,6 +130,7 @@ class MetadataRoutes(
 
     private fun Route.identifySeriesRoute() {
         post("/identify") {
+            if (!call.checkRateLimit()) return@post
             val request = call.receive<KomfIdentifyRequest>()
 
             val libraryId = request.libraryId?.value
@@ -146,6 +151,7 @@ class MetadataRoutes(
 
     private fun Route.matchSeriesRoute() {
         post("/match/library/{libraryId}/series/{seriesId}") {
+            if (!call.checkRateLimit()) return@post
 
             val libraryId = call.parameters.getOrFail("libraryId")
             val seriesId = MediaServerSeriesId(call.parameters.getOrFail("seriesId"))
@@ -159,14 +165,17 @@ class MetadataRoutes(
 
     private fun Route.matchLibraryRoute() {
         post("/match/library/{libraryId}") {
+            if (!call.checkRateLimit()) return@post
             val libraryId = MediaServerLibraryId(call.parameters.getOrFail("libraryId"))
-            metadataServiceProvider.first().metadataServiceFor(libraryId.value).matchLibraryMetadata(libraryId)
+            val dryRun = call.queryParameters["dryRun"].toBoolean()
+            metadataServiceProvider.first().metadataServiceFor(libraryId.value).matchLibraryMetadata(libraryId, dryRun = dryRun)
             call.response.status(HttpStatusCode.Accepted)
         }
     }
 
     private fun Route.resetSeriesRoute() {
         post("/reset/library/{libraryId}/series/{seriesId}") {
+            if (!call.checkRateLimit()) return@post
             val libraryId = call.parameters.getOrFail("libraryId")
             val seriesId = MediaServerSeriesId(call.parameters.getOrFail("seriesId"))
             val removeComicInfo = call.queryParameters["removeComicInfo"].toBoolean()
@@ -182,12 +191,22 @@ class MetadataRoutes(
 
     private fun Route.resetLibraryRoute() {
         post("/reset/library/{libraryId}") {
+            if (!call.checkRateLimit()) return@post
             val libraryId = MediaServerLibraryId(call.parameters.getOrFail("libraryId"))
             val removeComicInfo = call.queryParameters["removeComicInfo"].toBoolean()
             metadataServiceProvider.first().updateServiceFor(libraryId.value)
                 .resetLibraryMetadata(libraryId, removeComicInfo)
             call.response.status(HttpStatusCode.NoContent)
         }
+    }
+
+    private suspend fun io.ktor.server.application.ApplicationCall.checkRateLimit(): Boolean {
+        if (requestRateLimiter.first().tryAcquire()) return true
+        respond(
+            HttpStatusCode.TooManyRequests,
+            KomfErrorResponse("Too many requests. Reduce request rate and retry.")
+        )
+        return false
     }
 
 }

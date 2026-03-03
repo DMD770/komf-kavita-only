@@ -2,9 +2,12 @@ package snd.komf.mediaserver.kavita
 
 import io.ktor.client.*
 import io.ktor.client.call.*
+import io.ktor.client.plugins.ResponseException
 import io.ktor.client.request.*
 import io.ktor.client.statement.*
 import io.ktor.http.*
+import io.github.oshai.kotlinlogging.KotlinLogging
+import kotlinx.coroutines.delay
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.buildJsonObject
@@ -26,15 +29,26 @@ import snd.komf.mediaserver.kavita.model.request.KavitaCoverUploadRequest
 import snd.komf.mediaserver.kavita.model.request.KavitaSeriesMetadataUpdateRequest
 import snd.komf.mediaserver.kavita.model.request.KavitaSeriesUpdateRequest
 import snd.komf.model.Image
+import java.io.IOException
 import java.util.*
+import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.time.Duration.Companion.seconds
 
 class KavitaClient(
     private val ktor: HttpClient,
     private val json: Json,
     private val apiKey: String,
+    updateEventsPerMinute: Int = 120,
+    scanEventsPerMinute: Int = 30,
 ) {
-    private val updatesRateLimiter = rateLimiter(eventsPerInterval = 120, interval = 60.seconds)
+    private val updatesRateLimiter = rateLimiter(
+        eventsPerInterval = updateEventsPerMinute.coerceAtLeast(1),
+        interval = 60.seconds
+    )
+    private val scanRateLimiter = rateLimiter(
+        eventsPerInterval = scanEventsPerMinute.coerceAtLeast(1),
+        interval = 60.seconds
+    )
 
     suspend fun getSeries(seriesId: KavitaSeriesId): KavitaSeries {
         return ktor.get("api/series/${seriesId.value}").body()
@@ -82,25 +96,31 @@ class KavitaClient(
 
     suspend fun updateSeries(seriesUpdate: KavitaSeriesUpdateRequest) {
         updatesRateLimiter.acquire()
-        ktor.post("api/series/update") {
-            contentType(ContentType.Application.Json)
-            setBody(seriesUpdate)
+        withTransientRetry("api/series/update") {
+            ktor.post("api/series/update") {
+                contentType(ContentType.Application.Json)
+                setBody(seriesUpdate)
+            }
         }
     }
 
     suspend fun updateSeriesMetadata(metadata: KavitaSeriesMetadataUpdateRequest) {
         updatesRateLimiter.acquire()
-        ktor.post("api/series/metadata") {
-            contentType(ContentType.Application.Json)
-            setBody(metadata)
+        withTransientRetry("api/series/metadata") {
+            ktor.post("api/series/metadata") {
+                contentType(ContentType.Application.Json)
+                setBody(metadata)
+            }
         }
     }
 
     suspend fun updateChapterMetadata(metadata: KavitaChapterMetadataUpdateRequest) {
         updatesRateLimiter.acquire()
-        ktor.post("api/chapter/update") {
-            contentType(ContentType.Application.Json)
-            setBody(metadata)
+        withTransientRetry("api/chapter/update") {
+            ktor.post("api/chapter/update") {
+                contentType(ContentType.Application.Json)
+                setBody(metadata)
+            }
         }
     }
 
@@ -153,18 +173,22 @@ class KavitaClient(
     suspend fun uploadSeriesCover(seriesId: KavitaSeriesId, cover: Image, lockCover: Boolean) {
         updatesRateLimiter.acquire()
         val base64Image = Base64.getEncoder().encodeToString(cover.bytes)
-        ktor.post("api/upload/series") {
-            contentType(ContentType.Application.Json)
-            setBody(KavitaCoverUploadRequest(id = seriesId.value, url = base64Image, lockCover))
+        withTransientRetry("api/upload/series") {
+            ktor.post("api/upload/series") {
+                contentType(ContentType.Application.Json)
+                setBody(KavitaCoverUploadRequest(id = seriesId.value, url = base64Image, lockCover))
+            }
         }
     }
 
     suspend fun uploadVolumeCover(volumeId: KavitaVolumeId, cover: Image, lockCover: Boolean) {
         updatesRateLimiter.acquire()
         val base64Image = Base64.getEncoder().encodeToString(cover.bytes)
-        ktor.post("api/upload/volume") {
-            contentType(ContentType.Application.Json)
-            setBody(KavitaCoverUploadRequest(id = volumeId.value, url = base64Image, lockCover))
+        withTransientRetry("api/upload/volume") {
+            ktor.post("api/upload/volume") {
+                contentType(ContentType.Application.Json)
+                setBody(KavitaCoverUploadRequest(id = volumeId.value, url = base64Image, lockCover))
+            }
         }
     }
 
@@ -172,31 +196,97 @@ class KavitaClient(
         return ktor.get("api/library/libraries").body()
     }
 
-    suspend fun scanSeries(seriesId: KavitaSeriesId) {
-        ktor.post("api/series/scan") {
-            contentType(ContentType.Application.Json)
-            setBody(buildJsonObject { put("seriesId", seriesId.value) })
+    suspend fun scanSeries(libraryId: KavitaLibraryId, seriesId: KavitaSeriesId) {
+        scanRateLimiter.acquire()
+        withTransientRetry("api/series/scan") {
+            ktor.post("api/series/scan") {
+                contentType(ContentType.Application.Json)
+                setBody(
+                    buildJsonObject {
+                        put("libraryId", libraryId.value)
+                        put("seriesId", seriesId.value)
+                    }
+                )
 
+            }
         }
     }
 
     suspend fun scanLibrary(libraryId: KavitaLibraryId) {
-        ktor.post("api/library/scan") {
-            parameter("libraryId", libraryId.value)
+        scanRateLimiter.acquire()
+        withTransientRetry("api/library/scan") {
+            ktor.post("api/library/scan") {
+                parameter("libraryId", libraryId.value)
+            }
         }
     }
 
     suspend fun resetChapterLock(chapterId: KavitaChapterId) {
-        ktor.post("api/upload/reset-chapter-lock") {
-            contentType(ContentType.Application.Json)
-            setBody(buildJsonObject {
-                put("id", chapterId.value)
-                put("url", "")
-            })
+        if (resetChapterLockWarningLogged.compareAndSet(false, true)) {
+            logger.warn {
+                "Using deprecated Kavita endpoint api/upload/reset-chapter-lock. " +
+                    "If cover lock reset breaks after a Kavita upgrade, verify replacement endpoint."
+            }
+        }
+        withTransientRetry("api/upload/reset-chapter-lock") {
+            ktor.post("api/upload/reset-chapter-lock") {
+                contentType(ContentType.Application.Json)
+                setBody(buildJsonObject {
+                    put("id", chapterId.value)
+                    put("url", "")
+                })
 
+            }
         }
     }
 
+    private suspend fun <T> withTransientRetry(
+        operation: String,
+        maxAttempts: Int = 3,
+        initialDelayMs: Long = 500,
+        block: suspend () -> T
+    ): T {
+        var currentDelayMs = initialDelayMs
+        var lastError: Throwable? = null
+
+        repeat(maxAttempts) { attempt ->
+            try {
+                return block()
+            } catch (e: Throwable) {
+                val shouldRetry = isTransientError(e)
+                val isLastAttempt = attempt == maxAttempts - 1
+                if (!shouldRetry || isLastAttempt) {
+                    lastError = e
+                    return@repeat
+                }
+                logger.warn {
+                    "Transient error during $operation (attempt ${attempt + 1}/$maxAttempts). " +
+                        "Retrying in ${currentDelayMs}ms"
+                }
+                delay(currentDelayMs)
+                currentDelayMs *= 2
+            }
+        }
+
+        throw checkNotNull(lastError) { "Retry failed with unknown error for operation $operation" }
+    }
+
+    private fun isTransientError(error: Throwable): Boolean {
+        return when (error) {
+            is ResponseException -> {
+                val status = error.response.status
+                status == HttpStatusCode.TooManyRequests || status.value in 500..599
+            }
+
+            is IOException -> true
+            else -> false
+        }
+    }
+
+    companion object {
+        private val logger = KotlinLogging.logger {}
+        private val resetChapterLockWarningLogged = AtomicBoolean(false)
+    }
 }
 
 data class KavitaPage<T>(
