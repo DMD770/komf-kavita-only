@@ -72,7 +72,7 @@ data class KavitaChapter(
     val languageLocked: Boolean,
     val summaryLocked: Boolean,
     val titleNameLocked: Boolean,
-    val isbnLocked: Boolean,
+    val isbnLocked: Boolean = false,
     val releaseDateLocked: Boolean,
     val sortOrderLocked: Boolean,
 )
