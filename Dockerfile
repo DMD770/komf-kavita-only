@@ -13,10 +13,10 @@ RUN pipx install --include-deps pipx \
     && /root/.local/bin/pipx install --global --include-deps apprise
 
 WORKDIR /app
-COPY komf-app/build/libs/komf-app-1.0.0-SNAPSHOT-all.jar ./
+COPY komf-app/build/libs/*-all.jar ./komf.jar
 ENV LC_ALL=en_US.UTF-8
 ENV KOMF_CONFIG_DIR="/config"
-ENTRYPOINT ["java","-jar", "komf-app-1.0.0-SNAPSHOT-all.jar"]
+ENTRYPOINT ["java","-jar", "komf.jar"]
 EXPOSE 8085
 
 LABEL org.opencontainers.image.url=https://github.com/Snd-R/komf org.opencontainers.image.source=https://github.com/Snd-R/komf
