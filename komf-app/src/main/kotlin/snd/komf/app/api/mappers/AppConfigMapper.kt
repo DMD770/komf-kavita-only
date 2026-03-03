@@ -99,6 +99,7 @@ class AppConfigMapper {
             bookCovers = config.bookCovers,
             seriesCovers = config.seriesCovers,
             overrideExistingCovers = config.overrideExistingCovers,
+            lockCovers = config.lockSeriesCover || config.lockVolumeCover,
             lockSeriesCover = config.lockSeriesCover,
             lockVolumeCover = config.lockVolumeCover,
             updateModes = config.updateModes.map { it.fromUpdateMode() },

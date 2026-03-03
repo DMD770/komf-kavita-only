@@ -48,6 +48,8 @@ data class MetadataProcessingConfigDto(
     val bookCovers: Boolean,
     val seriesCovers: Boolean,
     val overrideExistingCovers: Boolean,
+    // Legacy compatibility field for older extensions/config parsers.
+    val lockCovers: Boolean,
     val lockSeriesCover: Boolean,
     val lockVolumeCover: Boolean,
 
