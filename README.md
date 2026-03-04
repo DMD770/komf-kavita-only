@@ -1,18 +1,26 @@
-# Komga and Kavita Metadata Fetcher
-Download latest version from https://github.com/Snd-R/komf/releases
+# KOMF (Kavita-Focused Fork)
+Forked from https://github.com/Snd-R/komf
 
 ## Overview
-Komga and Kavita Metadata Fetcher is a tool that fetches metadata and thumbnails for your digital comic book library.\
-It
-can automatically pick up added series and update their metadata and thumbnail.\
-You can also manually search and
-identify series, or match the entire library or a series.
+This fork is focused on Kavita deployments. It fetches metadata and thumbnails for your library, can automatically pick up new series, and supports manual identify/match workflows.
 
-### Komga and Kavita webui integration
-Browser web extension will let configure komf and identify series directly from komga or kavita webui
+### Fork behavior
+
+- `server.kavitaOnly` defaults to `true` in this fork.
+- Komga runtime/routes are disabled by default in Kavita-only mode.
+- Compatibility routes are kept where needed for existing clients.
+
+### WebUI integration
+The browser extension/userscript can configure KOMF and run identify/match from Kavita UI.
+
 - [Chrome download]( https://chromewebstore.google.com/detail/komf/bhppjldobkpocplgfcimljjhdjgbpdnh)
 - [Firefox download](https://addons.mozilla.org/en-US/firefox/addon/komf/)
-- deprecated [Komf userscript](https://github.com/Snd-R/komf-userscript) is still functional, but it will not receive new updates
+- [Komf userscript](https://github.com/Snd-R/komf-userscript) (customized variants supported in this fork workflow)
+
+Lock behavior note:
+
+- Official extension keeps a single `Lock Covers` control; in practice this applies cover lock behavior for both series and volume updates.
+- The customized userscript used in this fork exposes split controls (`Lock Series Cover` and `Lock Volume Cover`) for finer control.
 
 ## Building
 
@@ -29,8 +37,9 @@ To run the application, you can either use the JAR file or Docker Compose.
 
 To run the application using the JAR file, follow these steps:
 
-1. Ensure you have Java 17 or higher installed on your system.
+1. Ensure you have Java 21 or higher installed on your system (this fork is upgraded to JDK 21).
 2. Run `java -jar komf-1.0-SNAPSHOT-all.jar <path to config>`.
+3. By default the server listens on `http://localhost:8085` (customizable via config/env).
 
 ### Running with Docker Compose
 
@@ -485,7 +494,7 @@ interface Webhook {
 
 ## HTTP Endpoints
 
-Use Komga or Kavita in place of `{media-server}`.
+In this fork, prefer Kavita endpoints (`/kavita/...`) because Kavita-only mode is the default runtime path.
 
 ### Providers
 
