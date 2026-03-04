@@ -148,7 +148,11 @@ You can import this template in Unraid:
 This fork's CI publishes container images to:
 
 - GHCR: `ghcr.io/<owner>/<repo>`
-- Docker Hub: `docker.io/<DOCKERHUB_USERNAME>/<repo-name>`
+- Docker Hub: `docker.io/devilmaydie770/komf-kavita-only`
+
+Recommended tag right now:
+
+- `devilmaydie770/komf-kavita-only:kavita-hardening`
 
 Required GitHub repository secrets for Docker Hub publish:
 
@@ -175,7 +179,7 @@ docker create \
   -e KOMF_LOG_LEVEL=INFO \
   -v /path/to/config:/config \
   --restart unless-stopped \
-  sndxr/komf:latest
+  devilmaydie770/komf-kavita-only:kavita-hardening
 ```
 
 - if you don't already have a komga or kavita network you'll need to network create a new one

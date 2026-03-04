@@ -1,8 +1,8 @@
 <?xml version="1.0"?>
 <Container version="2">
   <Name>KOMF (Kavita Fork)</Name>
-  <Repository>dmd770/komf-kavita-only:latest</Repository>
-  <Registry>https://hub.docker.com/r/dmd770/komf-kavita-only</Registry>
+  <Repository>devilmaydie770/komf-kavita-only:kavita-hardening</Repository>
+  <Registry>https://hub.docker.com/r/devilmaydie770/komf-kavita-only</Registry>
   <Network>bridge</Network>
   <MyIP/>
   <Shell>sh</Shell>
@@ -11,7 +11,7 @@
   <Project>https://github.com/DMD770/komf-kavita-only</Project>
   <Overview>KOMF fork focused on Kavita metadata/cover updates with safer scan handling and run controls.</Overview>
   <Category>Tools:</Category>
-  <WebUI>http://[IP]:[PORT:8085]/</WebUI>
+  <WebUI>http://[IP]:[PORT:8095]/</WebUI>
   <TemplateURL>https://raw.githubusercontent.com/DMD770/komf-kavita-only/kavita-hardening/unraid/komf-kavita-only.xml</TemplateURL>
   <Icon/>
   <ExtraParams/>
@@ -22,8 +22,8 @@
   <DonateLink/>
   <Requires/>
 
-  <Config Name="WebUI Port" Target="8085" Default="8085" Mode="tcp" Description="KOMF HTTP port" Type="Port" Display="always" Required="true" Mask="false">8085</Config>
-  <Config Name="Config Path" Target="/config" Default="/mnt/user/appdata/komf" Mode="rw" Description="Container path for application.yml and database.sqlite" Type="Path" Display="always" Required="true" Mask="false">/mnt/user/appdata/komf</Config>
+  <Config Name="WebUI Port" Target="8085" Default="8095" Mode="tcp" Description="KOMF HTTP port" Type="Port" Display="always" Required="true" Mask="false">8095</Config>
+  <Config Name="Config Path" Target="/config" Default="/mnt/user/appdata/komf-kavita-only" Mode="rw" Description="Container path for application.yml and database.sqlite" Type="Path" Display="always" Required="true" Mask="false">/mnt/user/appdata/komf-kavita-only</Config>
 
   <Config Name="Kavita Base URL" Target="KOMF_KAVITA_BASE_URI" Default="http://kavita:5000" Mode="" Description="Kavita URL reachable from this container" Type="Variable" Display="always" Required="true" Mask="false">http://kavita:5000</Config>
   <Config Name="Kavita API Key" Target="KOMF_KAVITA_API_KEY" Default="" Mode="" Description="Kavita API key" Type="Variable" Display="always" Required="true" Mask="true"></Config>
