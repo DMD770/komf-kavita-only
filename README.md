@@ -32,6 +32,23 @@ This fork includes focused Kavita hardening and behavior fixes beyond upstream d
   - `scanEventsPerMinute: 5`
   - `deferredLibraryScanDelaySeconds: 300`
 
+### Upstream Base / Fork Traceability
+
+- Upstream base (from `master`): `5d0f689dc9832056e669e60f41dd8f01d7b275fe`
+- Current fork head (`kavita-hardening`): `c9135c8`
+
+Fork-only commits since upstream base:
+
+- `af0f572` Kavita-focused hardening: scan strategy, API checks, rate limits, lock mapping
+- `88169c5` CI workflow branch adjustments
+- `c522ba4` JDK 21 setup and fat-jar build step
+- `809ec0e` `lockCovers` compatibility for older extension parsing
+- `4be425c` Docker publish workflow and Dockerfile jar copy fix
+- `de84ec4` Kavita compatibility fix (`isbnLocked` default)
+- `47c9f00` Safer Kavita defaults + SQLite guidance
+- `05bd6e8` README: Kavita-focused runtime/default docs
+- `c9135c8` README: upstream change summary
+
 ### WebUI integration
 The browser extension/userscript can configure KOMF and run identify/match from Kavita UI.
 
