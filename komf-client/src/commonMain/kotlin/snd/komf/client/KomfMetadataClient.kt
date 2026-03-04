@@ -13,8 +13,11 @@ import snd.komf.api.KomfServerSeriesId
 import snd.komf.api.MediaServer
 import snd.komf.api.UnknownKomfProvider
 import snd.komf.api.metadata.KomfIdentifyRequest
+import snd.komf.api.metadata.KomfClearSkippedSeriesResponse
 import snd.komf.api.metadata.KomfMetadataJobResponse
 import snd.komf.api.metadata.KomfMetadataSeriesSearchResult
+import snd.komf.api.metadata.KomfRetrySkippedSeriesResponse
+import snd.komf.api.metadata.KomfSkippedSeriesEntry
 
 class KomfMetadataClient(
     private val ktor: HttpClient,
@@ -80,6 +83,23 @@ class KomfMetadataClient(
 
     suspend fun matchLibrary(libraryId: KomfServerLibraryId) {
         ktor.post("$metadataApiPrefix/match/library/$libraryId")
+    }
+
+    suspend fun getSkippedSeries(libraryId: KomfServerLibraryId): List<KomfSkippedSeriesEntry> {
+        return ktor.get("$metadataApiPrefix/skipped/library/$libraryId").body()
+    }
+
+    suspend fun retrySkippedSeries(
+        libraryId: KomfServerLibraryId,
+        dryRun: Boolean = false
+    ): KomfRetrySkippedSeriesResponse {
+        return ktor.post("$metadataApiPrefix/retry-skipped/library/$libraryId") {
+            parameter("dryRun", dryRun)
+        }.body()
+    }
+
+    suspend fun clearSkippedSeries(libraryId: KomfServerLibraryId): KomfClearSkippedSeriesResponse {
+        return ktor.delete("$metadataApiPrefix/skipped/library/$libraryId").body()
     }
 
     suspend fun resetSeries(

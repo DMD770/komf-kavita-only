@@ -46,8 +46,26 @@ import snd.komf.providers.CoreProviders
 import snd.komf.providers.MetadataProvider
 import snd.komf.providers.ProvidersModule
 import snd.komf.util.BookNameParser
+import java.util.concurrent.ConcurrentHashMap
 
 private val logger = KotlinLogging.logger {}
+
+data class SkippedSeriesEntry(
+    val oldSeriesId: MediaServerSeriesId,
+    val hintedName: String?,
+    val hintedSortName: String?,
+    val reason: String,
+    val observedAtEpochMs: Long,
+)
+
+data class RetrySkippedSeriesResult(
+    val totalSkipped: Int,
+    val resolved: Int,
+    val retried: Int,
+    val unresolved: Int,
+    val unresolvedSeriesIds: Collection<MediaServerSeriesId>,
+    val retryJobIds: Collection<MetadataJobId>,
+)
 
 class MetadataService(
     private val mediaServerClient: MediaServerClient,
@@ -60,6 +78,7 @@ class MetadataService(
     private val jobTracker: KomfJobTracker,
 ) {
     private val coroutineScope = CoroutineScope(Dispatchers.Default + SupervisorJob())
+    private val skippedSeriesByLibrary = ConcurrentHashMap<String, MutableList<SkippedSeriesEntry>>()
 
     fun availableProviders(libraryId: MediaServerLibraryId) = metadataProviders.providers(libraryId.value)
     fun availableProviders() = metadataProviders.defaultProvidersList()
@@ -145,7 +164,13 @@ class MetadataService(
                 page.content.forEach {
                     runCatching {
                         jobTracker.getMetadataJobEvents(
-                            matchSeriesMetadata(it.id, deferScans = true, dryRun = dryRun)
+                            matchSeriesMetadata(
+                                it.id,
+                                deferScans = true,
+                                dryRun = dryRun,
+                                libraryIdHint = libraryId,
+                                seriesHint = it
+                            )
                         )
                             ?.takeWhile { it !is CompletionEvent }
                             ?.collect()
@@ -175,11 +200,17 @@ class MetadataService(
     fun matchSeriesMetadata(
         seriesId: MediaServerSeriesId,
         deferScans: Boolean = false,
-        dryRun: Boolean = false
+        dryRun: Boolean = false,
+        libraryIdHint: MediaServerLibraryId? = null,
+        seriesHint: MediaServerSeries? = null,
     ): MetadataJobId {
 
         val jobId = launchJob(seriesId) { eventFlow ->
-            val context = loadSeriesContextOrSkip(seriesId) ?: return@launchJob
+            val context = loadSeriesContextOrSkip(
+                seriesId = seriesId,
+                libraryIdHint = libraryIdHint,
+                seriesHint = seriesHint
+            ) ?: return@launchJob
             val (series, books) = context
             val seriesTitle = series.metadata.title.ifBlank { series.name }
 
@@ -240,6 +271,90 @@ class MetadataService(
         }
 
         return jobId
+    }
+
+    fun getSkippedSeries(libraryId: MediaServerLibraryId): List<SkippedSeriesEntry> {
+        return skippedSeriesByLibrary[libraryId.value]?.toList().orEmpty()
+    }
+
+    fun clearSkippedSeries(libraryId: MediaServerLibraryId): Int {
+        return skippedSeriesByLibrary.remove(libraryId.value)?.size ?: 0
+    }
+
+    suspend fun retrySkippedSeries(
+        libraryId: MediaServerLibraryId,
+        dryRun: Boolean = false
+    ): RetrySkippedSeriesResult {
+        val skipped = getSkippedSeries(libraryId)
+        if (skipped.isEmpty()) {
+            return RetrySkippedSeriesResult(
+                totalSkipped = 0,
+                resolved = 0,
+                retried = 0,
+                unresolved = 0,
+                unresolvedSeriesIds = emptyList(),
+                retryJobIds = emptyList()
+            )
+        }
+
+        val currentSeries = getAllLibrarySeries(libraryId)
+        val byId = currentSeries.associateBy { it.id.value }
+        val byName = currentSeries.groupBy { normalizeSeriesLookupKey(it.metadata.title.ifBlank { it.name }) }
+        val bySortName = currentSeries.groupBy { normalizeSeriesLookupKey(it.metadata.titleSort) }
+
+        val resolvedSeries = linkedMapOf<String, MediaServerSeries>()
+        val unresolved = mutableListOf<MediaServerSeriesId>()
+
+        skipped.forEach { entry ->
+            val existingById = byId[entry.oldSeriesId.value]
+            if (existingById != null) {
+                resolvedSeries[existingById.id.value] = existingById
+                return@forEach
+            }
+
+            val nameCandidates = byName[normalizeSeriesLookupKey(entry.hintedName)].orEmpty()
+            val sortCandidates = bySortName[normalizeSeriesLookupKey(entry.hintedSortName)].orEmpty()
+            val candidates = (nameCandidates + sortCandidates).distinctBy { it.id.value }
+
+            when (candidates.size) {
+                1 -> resolvedSeries[candidates.first().id.value] = candidates.first()
+                else -> unresolved.add(entry.oldSeriesId)
+            }
+        }
+
+        val retryJobIds = mutableListOf<MetadataJobId>()
+        resolvedSeries.values.forEach { targetSeries ->
+            retryJobIds += matchSeriesMetadata(
+                seriesId = targetSeries.id,
+                deferScans = true,
+                dryRun = dryRun,
+                libraryIdHint = libraryId,
+                seriesHint = targetSeries
+            )
+        }
+
+        if (!dryRun && retryJobIds.isNotEmpty() && mediaServerClient is snd.komf.mediaserver.kavita.KavitaMediaServerClientAdapter) {
+            coroutineScope.launch {
+                mediaServerClient.executeDeferredScans(resolvedSeries.values.map { libraryId to it.id })
+            }
+        }
+
+        val unresolvedSet = unresolved.map { it.value }.toSet()
+        val remaining = skipped.filter { it.oldSeriesId.value in unresolvedSet }
+        if (remaining.isEmpty()) {
+            skippedSeriesByLibrary.remove(libraryId.value)
+        } else {
+            skippedSeriesByLibrary[libraryId.value] = remaining.toMutableList()
+        }
+
+        return RetrySkippedSeriesResult(
+            totalSkipped = skipped.size,
+            resolved = resolvedSeries.size,
+            retried = retryJobIds.size,
+            unresolved = unresolved.size,
+            unresolvedSeriesIds = unresolved,
+            retryJobIds = retryJobIds
+        )
     }
 
     private suspend fun matchSeries(
@@ -475,7 +590,9 @@ class MetadataService(
     }
 
     private suspend fun loadSeriesContextOrSkip(
-        seriesId: MediaServerSeriesId
+        seriesId: MediaServerSeriesId,
+        libraryIdHint: MediaServerLibraryId? = null,
+        seriesHint: MediaServerSeries? = null,
     ): Pair<MediaServerSeries, Collection<MediaServerBook>>? {
         return try {
             val series = mediaServerClient.getSeries(seriesId)
@@ -484,6 +601,16 @@ class MetadataService(
         } catch (e: Exception) {
             if (isMissingSeriesError(e)) {
                 logger.warn { "Skipping series ${seriesId.value}: not found (likely stale ID / 204)." }
+                val libraryId = libraryIdHint ?: seriesHint?.libraryId
+                if (libraryId != null) {
+                    rememberSkippedSeries(
+                        libraryId = libraryId,
+                        oldSeriesId = seriesId,
+                        hintedName = seriesHint?.metadata?.title?.ifBlank { seriesHint.name },
+                        hintedSortName = seriesHint?.metadata?.titleSort,
+                        reason = "not found (likely stale ID / 204)"
+                    )
+                }
                 null
             } else {
                 throw e
@@ -507,6 +634,52 @@ class MetadataService(
 
         val c = e.cause
         return c != null && c !== e && isMissingSeriesError(c)
+    }
+
+    private suspend fun getAllLibrarySeries(libraryId: MediaServerLibraryId): List<MediaServerSeries> {
+        val result = mutableListOf<MediaServerSeries>()
+        var pageNumber = 1
+        do {
+            val page = mediaServerClient.getSeries(libraryId, pageNumber)
+            result += page.content
+            pageNumber++
+        } while (page.pageNumber != page.totalPages && page.content.isNotEmpty())
+        return result
+    }
+
+    private fun rememberSkippedSeries(
+        libraryId: MediaServerLibraryId,
+        oldSeriesId: MediaServerSeriesId,
+        hintedName: String?,
+        hintedSortName: String?,
+        reason: String,
+    ) {
+        val list = skippedSeriesByLibrary.computeIfAbsent(libraryId.value) { mutableListOf() }
+        val duplicateIndex = list.indexOfFirst { it.oldSeriesId == oldSeriesId }
+        val newEntry = SkippedSeriesEntry(
+            oldSeriesId = oldSeriesId,
+            hintedName = hintedName,
+            hintedSortName = hintedSortName,
+            reason = reason,
+            observedAtEpochMs = System.currentTimeMillis()
+        )
+        if (duplicateIndex >= 0) {
+            list[duplicateIndex] = newEntry
+        } else {
+            list.add(newEntry)
+        }
+    }
+
+    private fun normalizeSeriesLookupKey(value: String?): String {
+        if (value == null) return ""
+        return value
+            .trim()
+            .lowercase()
+            .replace(SERIES_LOOKUP_NORMALIZE_REGEX, "")
+    }
+
+    companion object {
+        private val SERIES_LOOKUP_NORMALIZE_REGEX = "[^\\p{L}0-9]+".toRegex()
     }
 
 

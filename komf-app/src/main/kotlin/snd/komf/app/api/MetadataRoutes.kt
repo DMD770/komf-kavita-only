@@ -8,6 +8,7 @@ import io.ktor.server.request.receive
 import io.ktor.server.response.respond
 import io.ktor.server.response.respondBytes
 import io.ktor.server.routing.Route
+import io.ktor.server.routing.delete
 import io.ktor.server.routing.get
 import io.ktor.server.routing.post
 import io.ktor.server.routing.route
@@ -18,8 +19,11 @@ import snd.komf.api.KomfErrorResponse
 import snd.komf.api.KomfProviderSeriesId
 import snd.komf.api.job.KomfMetadataJobId
 import snd.komf.api.metadata.KomfIdentifyRequest
+import snd.komf.api.metadata.KomfClearSkippedSeriesResponse
 import snd.komf.api.metadata.KomfMetadataJobResponse
 import snd.komf.api.metadata.KomfMetadataSeriesSearchResult
+import snd.komf.api.metadata.KomfRetrySkippedSeriesResponse
+import snd.komf.api.metadata.KomfSkippedSeriesEntry
 import snd.komf.app.api.mappers.fromProvider
 import snd.komf.app.api.mappers.toProvider
 import snd.komf.comicinfo.ComicInfoWriter.ComicInfoException
@@ -47,6 +51,9 @@ class MetadataRoutes(
 
             matchSeriesRoute()
             matchLibraryRoute()
+            getSkippedSeriesRoute()
+            retrySkippedSeriesRoute()
+            clearSkippedSeriesRoute()
 
             resetSeriesRoute()
             resetLibraryRoute()
@@ -170,6 +177,58 @@ class MetadataRoutes(
             val dryRun = call.queryParameters["dryRun"].toBoolean()
             metadataServiceProvider.first().metadataServiceFor(libraryId.value).matchLibraryMetadata(libraryId, dryRun = dryRun)
             call.response.status(HttpStatusCode.Accepted)
+        }
+    }
+
+    private fun Route.getSkippedSeriesRoute() {
+        get("/skipped/library/{libraryId}") {
+            if (!call.checkRateLimit()) return@get
+            val libraryId = MediaServerLibraryId(call.parameters.getOrFail("libraryId"))
+            val entries = metadataServiceProvider.first().metadataServiceFor(libraryId.value).getSkippedSeries(libraryId)
+            call.respond(
+                HttpStatusCode.OK,
+                entries.map {
+                    KomfSkippedSeriesEntry(
+                        oldSeriesId = snd.komf.api.KomfServerSeriesId(it.oldSeriesId.value),
+                        hintedName = it.hintedName,
+                        hintedSortName = it.hintedSortName,
+                        reason = it.reason,
+                        observedAtEpochMs = it.observedAtEpochMs
+                    )
+                }
+            )
+        }
+    }
+
+    private fun Route.retrySkippedSeriesRoute() {
+        post("/retry-skipped/library/{libraryId}") {
+            if (!call.checkRateLimit()) return@post
+            val libraryId = MediaServerLibraryId(call.parameters.getOrFail("libraryId"))
+            val dryRun = call.queryParameters["dryRun"].toBoolean()
+            val result = metadataServiceProvider.first()
+                .metadataServiceFor(libraryId.value)
+                .retrySkippedSeries(libraryId, dryRun)
+
+            call.respond(
+                HttpStatusCode.OK,
+                KomfRetrySkippedSeriesResponse(
+                    totalSkipped = result.totalSkipped,
+                    resolved = result.resolved,
+                    retried = result.retried,
+                    unresolved = result.unresolved,
+                    unresolvedSeriesIds = result.unresolvedSeriesIds.map { snd.komf.api.KomfServerSeriesId(it.value) },
+                    retryJobIds = result.retryJobIds.map { KomfMetadataJobId(it.value.toString()) }
+                )
+            )
+        }
+    }
+
+    private fun Route.clearSkippedSeriesRoute() {
+        delete("/skipped/library/{libraryId}") {
+            if (!call.checkRateLimit()) return@delete
+            val libraryId = MediaServerLibraryId(call.parameters.getOrFail("libraryId"))
+            val cleared = metadataServiceProvider.first().metadataServiceFor(libraryId.value).clearSkippedSeries(libraryId)
+            call.respond(HttpStatusCode.OK, KomfClearSkippedSeriesResponse(cleared))
         }
     }
 
