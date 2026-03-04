@@ -101,10 +101,17 @@ class KavitaEventHandler(
     }
 
     private fun processProgressNotification(notification: NotificationProgressEvent) {
-        if (notification.name == "ScanProgress") {
+        val eventName = notification.name
+        if (eventName == "ScanProgress") {
             when (notification.eventType?.lowercase()) {
                 "started" -> scanState.markScanStarted()
                 "ended" -> scanState.markScanEnded()
+            }
+        }
+        if (eventName in maintenanceEvents) {
+            when (notification.eventType?.lowercase()) {
+                "started" -> scanState.markMaintenanceStarted(eventName!!)
+                "ended" -> scanState.markMaintenanceEnded(eventName!!)
             }
         }
 
@@ -187,5 +194,13 @@ class KavitaEventHandler(
         hubConnection.on("UserUpdate", { }, Object::class.java)
         hubConnection.on("UserProgressUpdate", { }, Object::class.java)
         hubConnection.on("WordCountAnalyzerProgress", { }, Object::class.java)
+    }
+
+    companion object {
+        private val maintenanceEvents = setOf(
+            "BackupDatabaseProgress",
+            "CleanupProgress",
+            "FileScanProgress"
+        )
     }
 }

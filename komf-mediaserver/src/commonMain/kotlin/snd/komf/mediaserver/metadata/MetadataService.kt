@@ -191,10 +191,19 @@ class MetadataService(
             var processingErrors = 0
             var unexpectedErrors = 0
             val deferredScans = mutableListOf<Pair<MediaServerLibraryId, MediaServerSeriesId>>()
-            do {
+            var abortedBySafetyTimeout = false
+            pageLoop@ do {
+                if (!waitForSafeScanWindow("match library", libraryId)) {
+                    abortedBySafetyTimeout = true
+                    break@pageLoop
+                }
                 val page = mediaServerClient.getSeries(libraryId, pageNumber)
                 totalSeries += page.content.size
-                page.content.forEach {
+                for (seriesEntry in page.content) {
+                    if (!waitForSafeScanWindow("match library", libraryId)) {
+                        abortedBySafetyTimeout = true
+                        break
+                    }
                     runCatching {
                         var sawPostProcessing = false
                         var sawProviderCompleted = false
@@ -203,11 +212,11 @@ class MetadataService(
 
                         jobTracker.getMetadataJobEvents(
                             matchSeriesMetadata(
-                                it.id,
+                                seriesEntry.id,
                                 deferScans = true,
                                 dryRun = dryRun,
                                 libraryIdHint = libraryId,
-                                seriesHint = it
+                                seriesHint = seriesEntry
                             )
                         )
                             ?.takeWhile { it !is CompletionEvent }
@@ -222,7 +231,7 @@ class MetadataService(
                             }
 
                         processedSeries += 1
-                        val wasSkipped = getSkippedSeries(libraryId).any { entry -> entry.oldSeriesId == it.id }
+                        val wasSkipped = getSkippedSeries(libraryId).any { entry -> entry.oldSeriesId == seriesEntry.id }
                         if (wasSkipped) return@runCatching
 
                         if (!dryRun && sawPostProcessing) updatedSeries += 1
@@ -237,8 +246,9 @@ class MetadataService(
                             errorCount += 1
                             unexpectedErrors += 1
                         }
-                    if (!dryRun) deferredScans.add(libraryId to it.id)
+                    if (!dryRun) deferredScans.add(libraryId to seriesEntry.id)
                 }
+                if (abortedBySafetyTimeout) break@pageLoop
                 pageNumber++
             } while (page.pageNumber != page.totalPages && page.content.isNotEmpty())
             
@@ -251,6 +261,11 @@ class MetadataService(
                 logger.info { "Finished dry-run library match for $libraryId. Encountered $errorCount errors. No metadata was written and no scans were triggered." }
             } else {
                 logger.info { "Finished library scan. Encountered $errorCount errors" }
+            }
+            if (abortedBySafetyTimeout) {
+                logger.warn {
+                    "Library match for ${libraryId.value} stopped early due to active Kavita activity wait timeout."
+                }
             }
 
             val skippedSeriesIds = getSkippedSeries(libraryId).map { it.oldSeriesId }
@@ -417,6 +432,11 @@ class MetadataService(
 
         val retryJobIds = mutableListOf<MetadataJobId>()
         resolvedSeries.values.forEach { targetSeries ->
+            if (!waitForSafeScanWindow("retry skipped series", libraryId)) {
+                throw IllegalStateException(
+                    "Timed out waiting for active Kavita activity to finish during retry for library ${libraryId.value}."
+                )
+            }
             retryJobIds += matchSeriesMetadata(
                 seriesId = targetSeries.id,
                 deferScans = true,
@@ -432,7 +452,7 @@ class MetadataService(
             }
         }
 
-        val unresolvedSet = unresolved.map { it.value }.toSet()
+        val unresolvedSet = unresolved.map { it.value }.toMutableSet()
         val remaining = skipped.filter { it.oldSeriesId.value in unresolvedSet }
         if (remaining.isEmpty()) {
             skippedSeriesByLibrary.remove(libraryId.value)
@@ -444,8 +464,8 @@ class MetadataService(
             totalSkipped = skipped.size,
             resolved = resolvedSeries.size,
             retried = retryJobIds.size,
-            unresolved = unresolved.size,
-            unresolvedSeriesIds = unresolved,
+            unresolved = unresolvedSet.size,
+            unresolvedSeriesIds = unresolvedSet.map { MediaServerSeriesId(it) },
             retryJobIds = retryJobIds
         )
     }

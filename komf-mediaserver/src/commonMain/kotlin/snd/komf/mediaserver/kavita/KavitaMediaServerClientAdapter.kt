@@ -205,23 +205,26 @@ class KavitaMediaServerClientAdapter(
         libraryId: MediaServerLibraryId
     ): Boolean {
         if (!scanSafetyEnabled) return true
-        if (!scanState.isScanInProgress()) return true
+        if (!scanState.isBusy()) return true
 
         val timeoutMs = activeScanWaitTimeoutMs.coerceAtLeast(0L)
         val pollMs = activeScanPollIntervalMs.coerceAtLeast(250L)
+        val active = scanState.activeActivities().joinToString(", ").ifBlank { "unknown" }
         logger.warn {
-            "Kavita scan is active. Waiting before $operation for library ${libraryId.value} " +
+            "Kavita activity is active ($active). Waiting before $operation for library ${libraryId.value} " +
                 "(timeout=${timeoutMs}ms, poll=${pollMs}ms)"
         }
         val success = scanState.awaitIdle(timeoutMs, pollMs) { elapsed, timeout ->
+            val waitingOn = scanState.activeActivities().joinToString(", ").ifBlank { "unknown" }
             logger.warn {
-                "Still waiting for Kavita scan to finish before $operation for library ${libraryId.value} " +
+                "Still waiting for Kavita activity to finish ($waitingOn) before $operation for library ${libraryId.value} " +
                     "(elapsed=${elapsed}ms/${timeout}ms)"
             }
         }
         if (!success) {
+            val waitingOn = scanState.activeActivities().joinToString(", ").ifBlank { "unknown" }
             logger.error {
-                "Timed out waiting for Kavita scan to finish before $operation for library ${libraryId.value}"
+                "Timed out waiting for Kavita activity to finish ($waitingOn) before $operation for library ${libraryId.value}"
             }
         }
         return success
