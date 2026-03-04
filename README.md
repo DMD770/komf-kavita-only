@@ -10,6 +10,28 @@ This fork is focused on Kavita deployments. It fetches metadata and thumbnails f
 - Komga runtime/routes are disabled by default in Kavita-only mode.
 - Compatibility routes are kept where needed for existing clients.
 
+### Changes From Upstream KOMF
+
+This fork includes focused Kavita hardening and behavior fixes beyond upstream defaults:
+
+- `kavitaOnly` runtime mode:
+  - defaults to `true`
+  - Komga runtime initialization is disabled in that mode
+  - Komga routes are disabled, with compatibility fallbacks where needed
+- Scan flow update for Kavita:
+  - per-series match/update triggers per-series scan when run individually
+  - full-library match defers per-series scans and triggers one library scan at the end
+  - avoids kicking off both series scan and library scan for the same library run
+- Cover-lock behavior:
+  - supports split lock fields (`lockSeriesCover`, `lockVolumeCover`) in config/API
+  - legacy `lockCovers` compatibility remains for older clients
+- Build/runtime baseline:
+  - upgraded to Java 21 toolchain/runtime
+- Safer default throttling for SQLite-backed deployments:
+  - `updateEventsPerMinute: 30`
+  - `scanEventsPerMinute: 5`
+  - `deferredLibraryScanDelaySeconds: 300`
+
 ### WebUI integration
 The browser extension/userscript can configure KOMF and run identify/match from Kavita UI.
 
