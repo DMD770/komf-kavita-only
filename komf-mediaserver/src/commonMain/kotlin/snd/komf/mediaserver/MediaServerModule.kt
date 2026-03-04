@@ -32,6 +32,7 @@ import snd.komf.mediaserver.kavita.KavitaAuthClient
 import snd.komf.mediaserver.kavita.KavitaClient
 import snd.komf.mediaserver.kavita.KavitaEventHandler
 import snd.komf.mediaserver.kavita.KavitaMediaServerClientAdapter
+import snd.komf.mediaserver.kavita.KavitaScanState
 import snd.komf.mediaserver.kavita.KavitaTokenProvider
 import snd.komf.mediaserver.komga.KomgaEventHandler
 import snd.komf.mediaserver.komga.KomgaMediaServerClientAdapter
@@ -99,6 +100,7 @@ class MediaServerModule(
     private val kavitaMetadataEventHandler: MetadataEventHandler
     private val kavitaNotificationsHandler: NotificationsEventHandler?
     private val kavitaEventHandler: KavitaEventHandler
+    private val kavitaScanState: KavitaScanState
 
     init {
         komgaBookThumbnailRepository = BookThumbnailsRepository(
@@ -221,12 +223,17 @@ class MediaServerModule(
             updateEventsPerMinute = kavitaConfig.apiRateLimit.updateEventsPerMinute,
             scanEventsPerMinute = kavitaConfig.apiRateLimit.scanEventsPerMinute
         )
+        kavitaScanState = KavitaScanState()
         kavitaApiCompatibilityChecker = KavitaApiCompatibilityChecker(kavitaClient)
         kavitaMediaServerClient = KavitaMediaServerClientAdapter(
             kavitaClient = kavitaClient,
             deferredLibraryScanDelayMs = kavitaConfig.scan.deferredLibraryScanDelaySeconds
                 .coerceAtLeast(0)
-                .times(1000)
+                .times(1000),
+            scanState = kavitaScanState,
+            scanSafetyEnabled = kavitaConfig.scan.waitForActiveScanToFinish && kavitaConfig.eventListener.enabled,
+            activeScanWaitTimeoutMs = kavitaConfig.scan.activeScanWaitTimeoutSeconds.coerceAtLeast(0).times(1000),
+            activeScanPollIntervalMs = kavitaConfig.scan.activeScanPollIntervalSeconds.coerceAtLeast(1).times(1000)
         )
         kavitaMetadataServiceProvider = createMetadataServiceProvider(
             config = kavitaConfig.metadataUpdate,
@@ -265,6 +272,7 @@ class MediaServerModule(
             kavitaClient = kavitaClient,
             tokenProvider = kavitaTokenProvider,
             clock = Clock.System,
+            scanState = kavitaScanState,
             eventListeners = listOfNotNull(kavitaMetadataEventHandler, kavitaNotificationsHandler),
         )
         if (kavitaConfig.eventListener.enabled) {

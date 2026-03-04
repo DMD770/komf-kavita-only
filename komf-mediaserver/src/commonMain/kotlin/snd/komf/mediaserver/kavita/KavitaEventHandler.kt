@@ -37,6 +37,7 @@ class KavitaEventHandler(
     private val kavitaClient: KavitaClient,
     private val tokenProvider: KavitaTokenProvider,
     private val clock: Clock,
+    private val scanState: KavitaScanState,
     private val eventListeners: List<MediaServerEventListener>
 ) {
     private val eventHandlerScope = CoroutineScope(Dispatchers.Default + SupervisorJob())
@@ -100,6 +101,13 @@ class KavitaEventHandler(
     }
 
     private fun processProgressNotification(notification: NotificationProgressEvent) {
+        if (notification.name == "ScanProgress") {
+            when (notification.eventType?.lowercase()) {
+                "started" -> scanState.markScanStarted()
+                "ended" -> scanState.markScanEnded()
+            }
+        }
+
         if (notification.name == "ScanProgress" && notification.eventType == "ended") {
             val now = clock.now()
             val lastScan = this.lastScan

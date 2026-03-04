@@ -72,6 +72,15 @@ class ConfigLoader(private val yaml: Yaml) {
         val kavitaDeferredLibraryScanDelaySeconds = System.getenv("KOMF_KAVITA_SCAN_DEFERRED_LIBRARY_SCAN_DELAY_SECONDS")
             ?.toLongOrNull()
             ?: kavitaConfig.scan.deferredLibraryScanDelaySeconds
+        val kavitaWaitForActiveScanToFinish = System.getenv("KOMF_KAVITA_SCAN_WAIT_FOR_ACTIVE_SCAN_TO_FINISH")
+            ?.toBooleanStrictOrNull()
+            ?: kavitaConfig.scan.waitForActiveScanToFinish
+        val kavitaActiveScanWaitTimeoutSeconds = System.getenv("KOMF_KAVITA_SCAN_ACTIVE_WAIT_TIMEOUT_SECONDS")
+            ?.toLongOrNull()
+            ?: kavitaConfig.scan.activeScanWaitTimeoutSeconds
+        val kavitaActiveScanPollIntervalSeconds = System.getenv("KOMF_KAVITA_SCAN_ACTIVE_POLL_INTERVAL_SECONDS")
+            ?.toLongOrNull()
+            ?: kavitaConfig.scan.activeScanPollIntervalSeconds
 
         val serverConfig = config.server
         val serverPort = System.getenv("KOMF_SERVER_PORT")?.toIntOrNull() ?: serverConfig.port
@@ -105,7 +114,10 @@ class ConfigLoader(private val yaml: Yaml) {
                     scanEventsPerMinute = kavitaScanEventsPerMinute
                 ),
                 scan = kavitaConfig.scan.copy(
-                    deferredLibraryScanDelaySeconds = kavitaDeferredLibraryScanDelaySeconds
+                    deferredLibraryScanDelaySeconds = kavitaDeferredLibraryScanDelaySeconds,
+                    waitForActiveScanToFinish = kavitaWaitForActiveScanToFinish,
+                    activeScanWaitTimeoutSeconds = kavitaActiveScanWaitTimeoutSeconds,
+                    activeScanPollIntervalSeconds = kavitaActiveScanPollIntervalSeconds
                 )
             ),
 

@@ -1,5 +1,6 @@
 package snd.komf.mediaserver.kavita
 
+import io.github.oshai.kotlinlogging.KotlinLogging
 import kotlinx.coroutines.delay
 import kotlinx.datetime.LocalTime
 import kotlinx.datetime.atTime
@@ -48,6 +49,10 @@ import kotlin.io.path.nameWithoutExtension
 class KavitaMediaServerClientAdapter(
     private val kavitaClient: KavitaClient,
     private val deferredLibraryScanDelayMs: Long = 120_000L,
+    private val scanState: KavitaScanState = KavitaScanState(),
+    private val scanSafetyEnabled: Boolean = true,
+    private val activeScanWaitTimeoutMs: Long = 1_800_000L,
+    private val activeScanPollIntervalMs: Long = 2_000L,
 ) : MediaServerClient {
 
     override suspend fun getSeries(seriesId: MediaServerSeriesId): MediaServerSeries {
@@ -193,6 +198,37 @@ class KavitaMediaServerClientAdapter(
             delay(deferredLibraryScanDelayMs.coerceAtLeast(0))
             kavitaClient.scanLibrary(kavitaLibraryId)
         }
+    }
+
+    suspend fun waitForSafeScanWindow(
+        operation: String,
+        libraryId: MediaServerLibraryId
+    ): Boolean {
+        if (!scanSafetyEnabled) return true
+        if (!scanState.isScanInProgress()) return true
+
+        val timeoutMs = activeScanWaitTimeoutMs.coerceAtLeast(0L)
+        val pollMs = activeScanPollIntervalMs.coerceAtLeast(250L)
+        logger.warn {
+            "Kavita scan is active. Waiting before $operation for library ${libraryId.value} " +
+                "(timeout=${timeoutMs}ms, poll=${pollMs}ms)"
+        }
+        val success = scanState.awaitIdle(timeoutMs, pollMs) { elapsed, timeout ->
+            logger.warn {
+                "Still waiting for Kavita scan to finish before $operation for library ${libraryId.value} " +
+                    "(elapsed=${elapsed}ms/${timeout}ms)"
+            }
+        }
+        if (!success) {
+            logger.error {
+                "Timed out waiting for Kavita scan to finish before $operation for library ${libraryId.value}"
+            }
+        }
+        return success
+    }
+
+    companion object {
+        private val logger = KotlinLogging.logger {}
     }
 }
 

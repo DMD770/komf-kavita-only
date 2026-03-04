@@ -173,6 +173,12 @@ class MetadataService(
 
     fun matchLibraryMetadata(libraryId: MediaServerLibraryId, dryRun: Boolean = false) {
         coroutineScope.launch {
+            if (!waitForSafeScanWindow("match library", libraryId)) {
+                logger.warn {
+                    "Skipping library match for ${libraryId.value}: timed out waiting for active Kavita scan to finish."
+                }
+                return@launch
+            }
             clearSkippedSeries(libraryId)
             val startedAtEpochMs = System.currentTimeMillis()
             var errorCount = 0
@@ -366,6 +372,12 @@ class MetadataService(
         libraryId: MediaServerLibraryId,
         dryRun: Boolean = false
     ): RetrySkippedSeriesResult {
+        if (!waitForSafeScanWindow("retry skipped series", libraryId)) {
+            throw IllegalStateException(
+                "Timed out waiting for active Kavita scan to finish before retrying skipped series for library ${libraryId.value}."
+            )
+        }
+
         val skipped = getSkippedSeries(libraryId)
         if (skipped.isEmpty()) {
             return RetrySkippedSeriesResult(
@@ -765,6 +777,15 @@ class MetadataService(
             .trim()
             .lowercase()
             .replace(SERIES_LOOKUP_NORMALIZE_REGEX, "")
+    }
+
+    private suspend fun waitForSafeScanWindow(
+        operation: String,
+        libraryId: MediaServerLibraryId
+    ): Boolean {
+        val client = mediaServerClient as? snd.komf.mediaserver.kavita.KavitaMediaServerClientAdapter
+            ?: return true
+        return client.waitForSafeScanWindow(operation, libraryId)
     }
 
     companion object {

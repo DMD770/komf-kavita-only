@@ -31,6 +31,9 @@ This fork includes focused Kavita hardening and behavior fixes beyond upstream d
   - `updateEventsPerMinute: 30`
   - `scanEventsPerMinute: 5`
   - `deferredLibraryScanDelaySeconds: 300`
+  - `waitForActiveScanToFinish: true`
+  - `activeScanWaitTimeoutSeconds: 1800`
+  - `activeScanPollIntervalSeconds: 2`
 
 ### Upstream Base / Fork Traceability
 
@@ -215,6 +218,12 @@ kavita:
     scanEventsPerMinute: 5 #or env:KOMF_KAVITA_API_RATE_LIMIT_SCAN_EVENTS_PER_MINUTE
   scan:
     deferredLibraryScanDelaySeconds: 300 #or env:KOMF_KAVITA_SCAN_DEFERRED_LIBRARY_SCAN_DELAY_SECONDS
+    waitForActiveScanToFinish: true #or env:KOMF_KAVITA_SCAN_WAIT_FOR_ACTIVE_SCAN_TO_FINISH
+    activeScanWaitTimeoutSeconds: 1800 #or env:KOMF_KAVITA_SCAN_ACTIVE_WAIT_TIMEOUT_SECONDS
+    activeScanPollIntervalSeconds: 2 #or env:KOMF_KAVITA_SCAN_ACTIVE_POLL_INTERVAL_SECONDS
+
+# Note: active-scan waiting relies on Kavita event listener updates, so keep `kavita.eventListener.enabled: true`
+# when using scan safety guards.
   eventListener:
     enabled: false # if disabled will not connect to kavita and won't pick up newly added entries
     metadataLibraryFilter: [ ]  # listen to all events if empty

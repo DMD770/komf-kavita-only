@@ -236,6 +236,9 @@ class AppContext(private val configPath: Path? = null) {
                 append("kavita.apiRateLimit.updateEventsPerMinute=${config.kavita.apiRateLimit.updateEventsPerMinute}, ")
                 append("kavita.apiRateLimit.scanEventsPerMinute=${config.kavita.apiRateLimit.scanEventsPerMinute}, ")
                 append("kavita.scan.deferredLibraryScanDelaySeconds=${config.kavita.scan.deferredLibraryScanDelaySeconds}, ")
+                append("kavita.scan.waitForActiveScanToFinish=${config.kavita.scan.waitForActiveScanToFinish}, ")
+                append("kavita.scan.activeScanWaitTimeoutSeconds=${config.kavita.scan.activeScanWaitTimeoutSeconds}, ")
+                append("kavita.scan.activeScanPollIntervalSeconds=${config.kavita.scan.activeScanPollIntervalSeconds}, ")
                 append("logLevel=${config.logLevel}, ")
                 append("httpLogLevel=${config.httpLogLevel}")
             }

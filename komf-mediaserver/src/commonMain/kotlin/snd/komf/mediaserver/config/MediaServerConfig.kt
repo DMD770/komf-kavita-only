@@ -37,6 +37,9 @@ data class KavitaApiRateLimitConfig(
 @Serializable
 data class KavitaScanConfig(
     val deferredLibraryScanDelaySeconds: Long = 300,
+    val waitForActiveScanToFinish: Boolean = true,
+    val activeScanWaitTimeoutSeconds: Long = 1800,
+    val activeScanPollIntervalSeconds: Long = 2,
 )
 
 @Serializable
