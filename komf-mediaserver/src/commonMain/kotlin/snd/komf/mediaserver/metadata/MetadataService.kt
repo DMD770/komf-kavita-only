@@ -67,6 +67,22 @@ data class RetrySkippedSeriesResult(
     val retryJobIds: Collection<MetadataJobId>,
 )
 
+data class LibraryRunSummary(
+    val libraryId: MediaServerLibraryId,
+    val startedAtEpochMs: Long,
+    val finishedAtEpochMs: Long,
+    val dryRun: Boolean,
+    val totalSeries: Int,
+    val processedSeries: Int,
+    val updatedSeries: Int,
+    val skippedSeries: Int,
+    val unmatchedSeries: Int,
+    val providerErrors: Int,
+    val processingErrors: Int,
+    val unexpectedErrors: Int,
+    val skippedSeriesIds: Collection<MediaServerSeriesId>,
+)
+
 class MetadataService(
     private val mediaServerClient: MediaServerClient,
     private val metadataProviders: ProvidersModule.MetadataProviders,
@@ -79,6 +95,7 @@ class MetadataService(
 ) {
     private val coroutineScope = CoroutineScope(Dispatchers.Default + SupervisorJob())
     private val skippedSeriesByLibrary = ConcurrentHashMap<String, MutableList<SkippedSeriesEntry>>()
+    private val libraryRunSummaries = ConcurrentHashMap<String, MutableList<LibraryRunSummary>>()
 
     fun availableProviders(libraryId: MediaServerLibraryId) = metadataProviders.providers(libraryId.value)
     fun availableProviders() = metadataProviders.defaultProvidersList()
@@ -156,13 +173,28 @@ class MetadataService(
 
     fun matchLibraryMetadata(libraryId: MediaServerLibraryId, dryRun: Boolean = false) {
         coroutineScope.launch {
+            clearSkippedSeries(libraryId)
+            val startedAtEpochMs = System.currentTimeMillis()
             var errorCount = 0
             var pageNumber = 1
+            var totalSeries = 0
+            var processedSeries = 0
+            var updatedSeries = 0
+            var unmatchedSeries = 0
+            var providerErrors = 0
+            var processingErrors = 0
+            var unexpectedErrors = 0
             val deferredScans = mutableListOf<Pair<MediaServerLibraryId, MediaServerSeriesId>>()
             do {
                 val page = mediaServerClient.getSeries(libraryId, pageNumber)
+                totalSeries += page.content.size
                 page.content.forEach {
                     runCatching {
+                        var sawPostProcessing = false
+                        var sawProviderCompleted = false
+                        var sawProviderError = false
+                        var sawProcessingError = false
+
                         jobTracker.getMetadataJobEvents(
                             matchSeriesMetadata(
                                 it.id,
@@ -173,11 +205,31 @@ class MetadataService(
                             )
                         )
                             ?.takeWhile { it !is CompletionEvent }
-                            ?.collect()
+                            ?.collect { event ->
+                                when (event) {
+                                    is PostProcessingStartEvent -> sawPostProcessing = true
+                                    is ProviderCompletedEvent -> sawProviderCompleted = true
+                                    is ProviderErrorEvent -> sawProviderError = true
+                                    is ProcessingErrorEvent -> sawProcessingError = true
+                                    else -> {}
+                                }
+                            }
+
+                        processedSeries += 1
+                        val wasSkipped = getSkippedSeries(libraryId).any { entry -> entry.oldSeriesId == it.id }
+                        if (wasSkipped) return@runCatching
+
+                        if (!dryRun && sawPostProcessing) updatedSeries += 1
+                        if (!sawPostProcessing && !sawProviderCompleted && !sawProviderError && !sawProcessingError) {
+                            unmatchedSeries += 1
+                        }
+                        if (sawProviderError) providerErrors += 1
+                        if (sawProcessingError) processingErrors += 1
                     }
                         .onFailure {
                             logger.error(it) { }
                             errorCount += 1
+                            unexpectedErrors += 1
                         }
                     if (!dryRun) deferredScans.add(libraryId to it.id)
                 }
@@ -194,6 +246,24 @@ class MetadataService(
             } else {
                 logger.info { "Finished library scan. Encountered $errorCount errors" }
             }
+
+            val skippedSeriesIds = getSkippedSeries(libraryId).map { it.oldSeriesId }
+            val summary = LibraryRunSummary(
+                libraryId = libraryId,
+                startedAtEpochMs = startedAtEpochMs,
+                finishedAtEpochMs = System.currentTimeMillis(),
+                dryRun = dryRun,
+                totalSeries = totalSeries,
+                processedSeries = processedSeries,
+                updatedSeries = updatedSeries,
+                skippedSeries = skippedSeriesIds.size,
+                unmatchedSeries = unmatchedSeries,
+                providerErrors = providerErrors,
+                processingErrors = processingErrors,
+                unexpectedErrors = unexpectedErrors,
+                skippedSeriesIds = skippedSeriesIds
+            )
+            rememberLibraryRunSummary(summary)
         }
     }
 
@@ -279,6 +349,17 @@ class MetadataService(
 
     fun clearSkippedSeries(libraryId: MediaServerLibraryId): Int {
         return skippedSeriesByLibrary.remove(libraryId.value)?.size ?: 0
+    }
+
+    fun latestLibraryRunSummary(libraryId: MediaServerLibraryId): LibraryRunSummary? {
+        return libraryRunSummaries[libraryId.value]?.lastOrNull()
+    }
+
+    fun libraryRunSummaries(libraryId: MediaServerLibraryId, limit: Int = 10): List<LibraryRunSummary> {
+        return libraryRunSummaries[libraryId.value]
+            ?.takeLast(limit.coerceAtLeast(1))
+            ?.asReversed()
+            .orEmpty()
     }
 
     suspend fun retrySkippedSeries(
@@ -670,6 +751,14 @@ class MetadataService(
         }
     }
 
+    private fun rememberLibraryRunSummary(summary: LibraryRunSummary) {
+        val list = libraryRunSummaries.computeIfAbsent(summary.libraryId.value) { mutableListOf() }
+        list.add(summary)
+        if (list.size > MAX_LIBRARY_RUN_SUMMARY_HISTORY) {
+            list.removeAt(0)
+        }
+    }
+
     private fun normalizeSeriesLookupKey(value: String?): String {
         if (value == null) return ""
         return value
@@ -680,6 +769,7 @@ class MetadataService(
 
     companion object {
         private val SERIES_LOOKUP_NORMALIZE_REGEX = "[^\\p{L}0-9]+".toRegex()
+        private const val MAX_LIBRARY_RUN_SUMMARY_HISTORY = 50
     }
 
 

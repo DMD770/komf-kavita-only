@@ -21,6 +21,7 @@ import snd.komf.api.job.KomfMetadataJobId
 import snd.komf.api.metadata.KomfIdentifyRequest
 import snd.komf.api.metadata.KomfClearSkippedSeriesResponse
 import snd.komf.api.metadata.KomfMetadataJobResponse
+import snd.komf.api.metadata.KomfLibraryRunSummary
 import snd.komf.api.metadata.KomfMetadataSeriesSearchResult
 import snd.komf.api.metadata.KomfRetrySkippedSeriesResponse
 import snd.komf.api.metadata.KomfSkippedSeriesEntry
@@ -54,6 +55,8 @@ class MetadataRoutes(
             getSkippedSeriesRoute()
             retrySkippedSeriesRoute()
             clearSkippedSeriesRoute()
+            latestLibrarySummaryRoute()
+            librarySummaryHistoryRoute()
 
             resetSeriesRoute()
             resetLibraryRoute()
@@ -232,6 +235,32 @@ class MetadataRoutes(
         }
     }
 
+    private fun Route.latestLibrarySummaryRoute() {
+        get("/summary/library/{libraryId}/latest") {
+            if (!call.checkRateLimit()) return@get
+            val libraryId = MediaServerLibraryId(call.parameters.getOrFail("libraryId"))
+            val summary = metadataServiceProvider.first().metadataServiceFor(libraryId.value).latestLibraryRunSummary(libraryId)
+            if (summary == null) {
+                call.respond(HttpStatusCode.NotFound, KomfErrorResponse("No summary found for library ${libraryId.value}"))
+                return@get
+            }
+            call.respond(HttpStatusCode.OK, summary.toDto())
+        }
+    }
+
+    private fun Route.librarySummaryHistoryRoute() {
+        get("/summary/library/{libraryId}") {
+            if (!call.checkRateLimit()) return@get
+            val libraryId = MediaServerLibraryId(call.parameters.getOrFail("libraryId"))
+            val limit = call.queryParameters["limit"]?.toIntOrNull() ?: 10
+            val summaries = metadataServiceProvider.first()
+                .metadataServiceFor(libraryId.value)
+                .libraryRunSummaries(libraryId, limit)
+                .map { it.toDto() }
+            call.respond(HttpStatusCode.OK, summaries)
+        }
+    }
+
     private fun Route.resetSeriesRoute() {
         post("/reset/library/{libraryId}/series/{seriesId}") {
             if (!call.checkRateLimit()) return@post
@@ -268,4 +297,19 @@ class MetadataRoutes(
         return false
     }
 
+    private fun snd.komf.mediaserver.metadata.LibraryRunSummary.toDto() = KomfLibraryRunSummary(
+        libraryId = snd.komf.api.KomfServerLibraryId(libraryId.value),
+        startedAtEpochMs = startedAtEpochMs,
+        finishedAtEpochMs = finishedAtEpochMs,
+        dryRun = dryRun,
+        totalSeries = totalSeries,
+        processedSeries = processedSeries,
+        updatedSeries = updatedSeries,
+        skippedSeries = skippedSeries,
+        unmatchedSeries = unmatchedSeries,
+        providerErrors = providerErrors,
+        processingErrors = processingErrors,
+        unexpectedErrors = unexpectedErrors,
+        skippedSeriesIds = skippedSeriesIds.map { snd.komf.api.KomfServerSeriesId(it.value) }
+    )
 }

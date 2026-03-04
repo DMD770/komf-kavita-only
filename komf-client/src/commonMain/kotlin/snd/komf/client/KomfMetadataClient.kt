@@ -14,6 +14,7 @@ import snd.komf.api.MediaServer
 import snd.komf.api.UnknownKomfProvider
 import snd.komf.api.metadata.KomfIdentifyRequest
 import snd.komf.api.metadata.KomfClearSkippedSeriesResponse
+import snd.komf.api.metadata.KomfLibraryRunSummary
 import snd.komf.api.metadata.KomfMetadataJobResponse
 import snd.komf.api.metadata.KomfMetadataSeriesSearchResult
 import snd.komf.api.metadata.KomfRetrySkippedSeriesResponse
@@ -100,6 +101,19 @@ class KomfMetadataClient(
 
     suspend fun clearSkippedSeries(libraryId: KomfServerLibraryId): KomfClearSkippedSeriesResponse {
         return ktor.delete("$metadataApiPrefix/skipped/library/$libraryId").body()
+    }
+
+    suspend fun latestLibrarySummary(libraryId: KomfServerLibraryId): KomfLibraryRunSummary {
+        return ktor.get("$metadataApiPrefix/summary/library/$libraryId/latest").body()
+    }
+
+    suspend fun librarySummaryHistory(
+        libraryId: KomfServerLibraryId,
+        limit: Int = 10
+    ): List<KomfLibraryRunSummary> {
+        return ktor.get("$metadataApiPrefix/summary/library/$libraryId") {
+            parameter("limit", limit)
+        }.body()
     }
 
     suspend fun resetSeries(

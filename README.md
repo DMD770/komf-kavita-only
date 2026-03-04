@@ -35,7 +35,7 @@ This fork includes focused Kavita hardening and behavior fixes beyond upstream d
 ### Upstream Base / Fork Traceability
 
 - Upstream base (from `master`): `5d0f689dc9832056e669e60f41dd8f01d7b275fe`
-- Current fork head (`kavita-hardening`): `c9135c8`
+- Current fork head (`kavita-hardening`): `fb03544`
 
 Fork-only commits since upstream base:
 
@@ -48,6 +48,10 @@ Fork-only commits since upstream base:
 - `47c9f00` Safer Kavita defaults + SQLite guidance
 - `05bd6e8` README: Kavita-focused runtime/default docs
 - `c9135c8` README: upstream change summary
+- `1427854` README: upstream base/fork traceability section
+- `d65c065` README: userscript links + explicit Snd-R credit
+- `442a95a` Fix: handle Kavita 204/404 stale series IDs without failing jobs
+- `fb03544` QoL: skipped-series tracking + targeted retry with ID remap
 
 ### WebUI integration
 The browser extension/userscript can configure KOMF and run identify/match from Kavita UI.
@@ -63,6 +67,21 @@ Lock behavior note:
 
 - Official extension keeps a single `Lock Covers` control; in practice this applies cover lock behavior for both series and volume updates.
 - The customized userscript used in this fork exposes split controls (`Lock Series Cover` and `Lock Volume Cover`) for finer control.
+
+### Library-run QoL endpoints (Kavita-focused)
+
+For large runs where some series IDs go stale (204/404), this fork exposes targeted retry and run-summary APIs:
+
+- `GET /api/kavita/metadata/skipped/library/{libraryId}`
+  - list stale/skipped series from the latest run
+- `POST /api/kavita/metadata/retry-skipped/library/{libraryId}?dryRun=false`
+  - retries only skipped entries; remaps to current IDs when possible
+- `DELETE /api/kavita/metadata/skipped/library/{libraryId}`
+  - clears stored skipped entries
+- `GET /api/kavita/metadata/summary/library/{libraryId}/latest`
+  - latest library run summary (processed/updated/skipped/errors/timing)
+- `GET /api/kavita/metadata/summary/library/{libraryId}?limit=10`
+  - recent summary history
 
 ## Building
 
