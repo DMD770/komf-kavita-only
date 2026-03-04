@@ -137,6 +137,18 @@ services:
     restart: unless-stopped
 ```
 
+### Docker Image Publish Targets
+
+This fork's CI publishes container images to:
+
+- GHCR: `ghcr.io/<owner>/<repo>`
+- Docker Hub: `docker.io/<DOCKERHUB_USERNAME>/<repo-name>`
+
+Required GitHub repository secrets for Docker Hub publish:
+
+- `DOCKERHUB_USERNAME`
+- `DOCKERHUB_TOKEN` (Docker Hub access token)
+
 ### Running with Docker Create
 
 ```
