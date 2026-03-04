@@ -54,7 +54,10 @@ The browser extension/userscript can configure KOMF and run identify/match from 
 
 - [Chrome download]( https://chromewebstore.google.com/detail/komf/bhppjldobkpocplgfcimljjhdjgbpdnh)
 - [Firefox download](https://addons.mozilla.org/en-US/firefox/addon/komf/)
-- [Komf userscript](https://github.com/Snd-R/komf-userscript) (customized variants supported in this fork workflow)
+- [Kavita-focused userscript fork (DMD770)](https://github.com/DMD770/komf-userscript-kavita) (recommended in this fork workflow; exposes split `Lock Series Cover` and `Lock Volume Cover`)
+- [Original Komf userscript (Snd-R)](https://github.com/Snd-R/komf-userscript) (upstream reference)
+
+Credit: userscript foundation and original work by Snd-R.
 
 Lock behavior note:
 
