@@ -30,13 +30,13 @@ data class KavitaConfig(
 
 @Serializable
 data class KavitaApiRateLimitConfig(
-    val updateEventsPerMinute: Int = 120,
-    val scanEventsPerMinute: Int = 30,
+    val updateEventsPerMinute: Int = 30,
+    val scanEventsPerMinute: Int = 5,
 )
 
 @Serializable
 data class KavitaScanConfig(
-    val deferredLibraryScanDelaySeconds: Long = 120,
+    val deferredLibraryScanDelaySeconds: Long = 300,
 )
 
 @Serializable

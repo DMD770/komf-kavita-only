@@ -51,9 +51,9 @@ services:
       - KOMF_KOMGA_PASSWORD=admin
       - KOMF_KAVITA_BASE_URI=http://kavita:5000
       - KOMF_KAVITA_API_KEY=16707507-d05d-4696-b126-c3976ae14ffb
-      - KOMF_KAVITA_API_RATE_LIMIT_UPDATE_EVENTS_PER_MINUTE=120
-      - KOMF_KAVITA_API_RATE_LIMIT_SCAN_EVENTS_PER_MINUTE=30
-      - KOMF_KAVITA_SCAN_DEFERRED_LIBRARY_SCAN_DELAY_SECONDS=120
+      - KOMF_KAVITA_API_RATE_LIMIT_UPDATE_EVENTS_PER_MINUTE=30
+      - KOMF_KAVITA_API_RATE_LIMIT_SCAN_EVENTS_PER_MINUTE=5
+      - KOMF_KAVITA_SCAN_DEFERRED_LIBRARY_SCAN_DELAY_SECONDS=300
       - KOMF_SERVER_KAVITA_ONLY=true
       - KOMF_SERVER_METADATA_REQUESTS_PER_MINUTE=0
       - KOMF_LOG_LEVEL=INFO
@@ -76,9 +76,9 @@ docker create \
   -e KOMF_KOMGA_PASSWORD=admin \
   -e KOMF_KAVITA_BASE_URI=http://kavita:5000 \
   -e KOMF_KAVITA_API_KEY=16707507-d05d-4696-b126-c3976ae14ffb \
-  -e KOMF_KAVITA_API_RATE_LIMIT_UPDATE_EVENTS_PER_MINUTE=120 \
-  -e KOMF_KAVITA_API_RATE_LIMIT_SCAN_EVENTS_PER_MINUTE=30 \
-  -e KOMF_KAVITA_SCAN_DEFERRED_LIBRARY_SCAN_DELAY_SECONDS=120 \
+  -e KOMF_KAVITA_API_RATE_LIMIT_UPDATE_EVENTS_PER_MINUTE=30 \
+  -e KOMF_KAVITA_API_RATE_LIMIT_SCAN_EVENTS_PER_MINUTE=5 \
+  -e KOMF_KAVITA_SCAN_DEFERRED_LIBRARY_SCAN_DELAY_SECONDS=300 \
   -e KOMF_SERVER_KAVITA_ONLY=true \
   -e KOMF_SERVER_METADATA_REQUESTS_PER_MINUTE=0 \
   -e KOMF_LOG_LEVEL=INFO \
@@ -141,10 +141,10 @@ kavita:
   baseUri: "http://localhost:5000" #or env:KOMF_KAVITA_BASE_URI
   apiKey: "16707507-d05d-4696-b126-c3976ae14ffb" #or env:KOMF_KAVITA_API_KEY
   apiRateLimit:
-    updateEventsPerMinute: 120 #or env:KOMF_KAVITA_API_RATE_LIMIT_UPDATE_EVENTS_PER_MINUTE
-    scanEventsPerMinute: 30 #or env:KOMF_KAVITA_API_RATE_LIMIT_SCAN_EVENTS_PER_MINUTE
+    updateEventsPerMinute: 30 #or env:KOMF_KAVITA_API_RATE_LIMIT_UPDATE_EVENTS_PER_MINUTE
+    scanEventsPerMinute: 5 #or env:KOMF_KAVITA_API_RATE_LIMIT_SCAN_EVENTS_PER_MINUTE
   scan:
-    deferredLibraryScanDelaySeconds: 120 #or env:KOMF_KAVITA_SCAN_DEFERRED_LIBRARY_SCAN_DELAY_SECONDS
+    deferredLibraryScanDelaySeconds: 300 #or env:KOMF_KAVITA_SCAN_DEFERRED_LIBRARY_SCAN_DELAY_SECONDS
   eventListener:
     enabled: false # if disabled will not connect to kavita and won't pick up newly added entries
     metadataLibraryFilter: [ ]  # listen to all events if empty
@@ -260,6 +260,17 @@ logLevel: INFO # or env:KOMF_LOG_LEVEL
 ```
 
 ## Metadata update config for a library
+
+### Kavita rate-limit guidance (SQLite-safe default)
+
+- Default values in this repo are intentionally conservative for SQLite-backed deployments:
+  - `updateEventsPerMinute: 30`
+  - `scanEventsPerMinute: 5`
+  - `deferredLibraryScanDelaySeconds: 300`
+- This is especially important when migrating to a new system/platform where you may need a fresh instance and cannot rely on prior DB state.
+- If your system is stable and storage is fast (e.g., local NVMe), you can increase these gradually.
+- For large library-wide runs, prefer quiet windows (avoid overlapping heavy scan/update jobs).
+- Per-series operations are usually lower risk than full-library runs.
 
 You can configure a set of metadata update options that will only be used with specified library. If no options are
 specified for a library
