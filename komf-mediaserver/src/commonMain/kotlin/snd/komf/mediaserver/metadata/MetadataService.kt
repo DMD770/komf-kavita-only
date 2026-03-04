@@ -47,6 +47,7 @@ import snd.komf.providers.MetadataProvider
 import snd.komf.providers.ProvidersModule
 import snd.komf.util.BookNameParser
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.atomic.AtomicBoolean
 
 private val logger = KotlinLogging.logger {}
 
@@ -83,6 +84,31 @@ data class LibraryRunSummary(
     val skippedSeriesIds: Collection<MediaServerSeriesId>,
 )
 
+data class LibraryRunCheckpoint(
+    val pageNumber: Int,
+    val startIndexInPage: Int,
+    val dryRun: Boolean,
+    val updatedAtEpochMs: Long,
+)
+
+enum class LibraryRunResumeMode {
+    CONTINUE,
+    NEW,
+}
+
+data class LibraryRunControlStatus(
+    val active: Boolean,
+    val paused: Boolean,
+    val stopRequested: Boolean,
+    val hasCheckpoint: Boolean,
+    val checkpoint: LibraryRunCheckpoint?,
+)
+
+private data class ActiveLibraryRun(
+    val pauseRequested: AtomicBoolean = AtomicBoolean(false),
+    val stopRequested: AtomicBoolean = AtomicBoolean(false),
+)
+
 class MetadataService(
     private val mediaServerClient: MediaServerClient,
     private val metadataProviders: ProvidersModule.MetadataProviders,
@@ -96,6 +122,8 @@ class MetadataService(
     private val coroutineScope = CoroutineScope(Dispatchers.Default + SupervisorJob())
     private val skippedSeriesByLibrary = ConcurrentHashMap<String, MutableList<SkippedSeriesEntry>>()
     private val libraryRunSummaries = ConcurrentHashMap<String, MutableList<LibraryRunSummary>>()
+    private val activeLibraryRuns = ConcurrentHashMap<String, ActiveLibraryRun>()
+    private val libraryRunCheckpoints = ConcurrentHashMap<String, LibraryRunCheckpoint>()
 
     fun availableProviders(libraryId: MediaServerLibraryId) = metadataProviders.providers(libraryId.value)
     fun availableProviders() = metadataProviders.defaultProvidersList()
@@ -172,39 +200,86 @@ class MetadataService(
     }
 
     fun matchLibraryMetadata(libraryId: MediaServerLibraryId, dryRun: Boolean = false) {
+        if (activeLibraryRuns.containsKey(libraryId.value)) {
+            logger.warn { "Library match already active for ${libraryId.value}; ignoring duplicate start request." }
+            return
+        }
         coroutineScope.launch {
-            if (!waitForSafeScanWindow("match library", libraryId)) {
-                logger.warn {
-                    "Skipping library match for ${libraryId.value}: timed out waiting for active Kavita scan to finish."
+            val runControl = ActiveLibraryRun()
+            activeLibraryRuns[libraryId.value] = runControl
+            try {
+                val checkpoint = libraryRunCheckpoints.remove(libraryId.value)
+                val startPageNumber = 1
+                val startIndexInPage = 0
+                val effectiveDryRun = dryRun
+
+                if (runControl.stopRequested.get()) {
+                    logger.warn { "Skipping library match for ${libraryId.value}: stop was requested before start." }
+                    saveCheckpoint(libraryId, startPageNumber, startIndexInPage, effectiveDryRun)
+                    return@launch
                 }
-                return@launch
-            }
-            clearSkippedSeries(libraryId)
-            val startedAtEpochMs = System.currentTimeMillis()
-            var errorCount = 0
-            var pageNumber = 1
-            var totalSeries = 0
-            var processedSeries = 0
-            var updatedSeries = 0
-            var unmatchedSeries = 0
-            var providerErrors = 0
-            var processingErrors = 0
-            var unexpectedErrors = 0
-            val deferredScans = mutableListOf<Pair<MediaServerLibraryId, MediaServerSeriesId>>()
-            var abortedBySafetyTimeout = false
-            pageLoop@ do {
-                if (!waitForSafeScanWindow("match library", libraryId)) {
-                    abortedBySafetyTimeout = true
-                    break@pageLoop
+                if (!waitForRunWindow("match library", libraryId, runControl)) {
+                    logger.warn { "Skipping library match for ${libraryId.value}: interrupted before start." }
+                    saveCheckpoint(libraryId, startPageNumber, startIndexInPage, effectiveDryRun)
+                    return@launch
                 }
-                val page = mediaServerClient.getSeries(libraryId, pageNumber)
-                totalSeries += page.content.size
-                for (seriesEntry in page.content) {
-                    if (!waitForSafeScanWindow("match library", libraryId)) {
-                        abortedBySafetyTimeout = true
-                        break
+
+                if (checkpoint == null || checkpoint.dryRun != effectiveDryRun) {
+                    clearSkippedSeries(libraryId)
+                } else {
+                    logger.info {
+                        "Resuming from checkpoint for ${libraryId.value} at page ${checkpoint.pageNumber}, index ${checkpoint.startIndexInPage}"
                     }
-                    runCatching {
+                }
+                val startedAtEpochMs = System.currentTimeMillis()
+                var errorCount = 0
+                var pageNumber = checkpoint?.pageNumber ?: startPageNumber
+                var pageStartIndex = checkpoint?.startIndexInPage ?: startIndexInPage
+                var totalSeries = 0
+                var processedSeries = 0
+                var updatedSeries = 0
+                var unmatchedSeries = 0
+                var providerErrors = 0
+                var processingErrors = 0
+                var unexpectedErrors = 0
+                val deferredScans = mutableListOf<Pair<MediaServerLibraryId, MediaServerSeriesId>>()
+                var abortedBySafetyTimeout = false
+                var stoppedByUser = false
+                var hasMorePages = true
+                pageLoop@ do {
+                    if (runControl.stopRequested.get()) {
+                        stoppedByUser = true
+                        saveCheckpoint(libraryId, pageNumber, pageStartIndex, effectiveDryRun)
+                        break@pageLoop
+                    }
+                    if (!waitForRunWindow("match library", libraryId, runControl)) {
+                        abortedBySafetyTimeout = true
+                        saveCheckpoint(libraryId, pageNumber, pageStartIndex, effectiveDryRun)
+                        break@pageLoop
+                    }
+                    val page = mediaServerClient.getSeries(libraryId, pageNumber)
+                    totalSeries += page.content.size
+                    if (page.content.isEmpty()) {
+                        hasMorePages = false
+                        break@pageLoop
+                    }
+                    var nextIndexForCheckpoint = 0
+                    for (seriesEntry in page.content) {
+                        if (nextIndexForCheckpoint < pageStartIndex) {
+                            nextIndexForCheckpoint++
+                            continue
+                        }
+                        if (runControl.stopRequested.get()) {
+                            stoppedByUser = true
+                            saveCheckpoint(libraryId, pageNumber, nextIndexForCheckpoint, effectiveDryRun)
+                            break@pageLoop
+                        }
+                        if (!waitForRunWindow("match library", libraryId, runControl)) {
+                            abortedBySafetyTimeout = true
+                            saveCheckpoint(libraryId, pageNumber, nextIndexForCheckpoint, effectiveDryRun)
+                            break
+                        }
+                        runCatching {
                         var sawPostProcessing = false
                         var sawProviderCompleted = false
                         var sawProviderError = false
@@ -214,7 +289,7 @@ class MetadataService(
                             matchSeriesMetadata(
                                 seriesEntry.id,
                                 deferScans = true,
-                                dryRun = dryRun,
+                                dryRun = effectiveDryRun,
                                 libraryIdHint = libraryId,
                                 seriesHint = seriesEntry
                             )
@@ -234,30 +309,34 @@ class MetadataService(
                         val wasSkipped = getSkippedSeries(libraryId).any { entry -> entry.oldSeriesId == seriesEntry.id }
                         if (wasSkipped) return@runCatching
 
-                        if (!dryRun && sawPostProcessing) updatedSeries += 1
+                        if (!effectiveDryRun && sawPostProcessing) updatedSeries += 1
                         if (!sawPostProcessing && !sawProviderCompleted && !sawProviderError && !sawProcessingError) {
                             unmatchedSeries += 1
                         }
                         if (sawProviderError) providerErrors += 1
                         if (sawProcessingError) processingErrors += 1
                     }
-                        .onFailure {
+                            .onFailure {
                             logger.error(it) { }
                             errorCount += 1
                             unexpectedErrors += 1
                         }
-                    if (!dryRun) deferredScans.add(libraryId to seriesEntry.id)
-                }
-                if (abortedBySafetyTimeout) break@pageLoop
-                pageNumber++
-            } while (page.pageNumber != page.totalPages && page.content.isNotEmpty())
+                        if (!effectiveDryRun) deferredScans.add(libraryId to seriesEntry.id)
+                        nextIndexForCheckpoint++
+                    }
+                    if (abortedBySafetyTimeout) break@pageLoop
+                    if (stoppedByUser) break@pageLoop
+                    pageStartIndex = 0
+                    pageNumber++
+                    hasMorePages = page.pageNumber != page.totalPages
+                } while (hasMorePages)
             
             // Execute all deferred scans after library processing is complete
-            if (!dryRun && mediaServerClient is snd.komf.mediaserver.kavita.KavitaMediaServerClientAdapter) {
+            if (!effectiveDryRun && !stoppedByUser && !abortedBySafetyTimeout && mediaServerClient is snd.komf.mediaserver.kavita.KavitaMediaServerClientAdapter) {
                 mediaServerClient.executeDeferredScans(deferredScans)
             }
             
-            if (dryRun) {
+            if (effectiveDryRun) {
                 logger.info { "Finished dry-run library match for $libraryId. Encountered $errorCount errors. No metadata was written and no scans were triggered." }
             } else {
                 logger.info { "Finished library scan. Encountered $errorCount errors" }
@@ -267,13 +346,19 @@ class MetadataService(
                     "Library match for ${libraryId.value} stopped early due to active Kavita activity wait timeout."
                 }
             }
+            if (stoppedByUser) {
+                logger.warn { "Library match for ${libraryId.value} stopped by user request." }
+            }
+            if (!stoppedByUser && !abortedBySafetyTimeout) {
+                libraryRunCheckpoints.remove(libraryId.value)
+            }
 
             val skippedSeriesIds = getSkippedSeries(libraryId).map { it.oldSeriesId }
             val summary = LibraryRunSummary(
                 libraryId = libraryId,
                 startedAtEpochMs = startedAtEpochMs,
                 finishedAtEpochMs = System.currentTimeMillis(),
-                dryRun = dryRun,
+                dryRun = effectiveDryRun,
                 totalSeries = totalSeries,
                 processedSeries = processedSeries,
                 updatedSeries = updatedSeries,
@@ -284,7 +369,10 @@ class MetadataService(
                 unexpectedErrors = unexpectedErrors,
                 skippedSeriesIds = skippedSeriesIds
             )
-            rememberLibraryRunSummary(summary)
+                rememberLibraryRunSummary(summary)
+            } finally {
+                activeLibraryRuns.remove(libraryId.value)
+            }
         }
     }
 
@@ -370,6 +458,57 @@ class MetadataService(
 
     fun clearSkippedSeries(libraryId: MediaServerLibraryId): Int {
         return skippedSeriesByLibrary.remove(libraryId.value)?.size ?: 0
+    }
+
+    fun pauseLibraryRun(libraryId: MediaServerLibraryId): Boolean {
+        val run = activeLibraryRuns[libraryId.value] ?: return false
+        run.pauseRequested.set(true)
+        return true
+    }
+
+    fun stopLibraryRun(libraryId: MediaServerLibraryId): Boolean {
+        val run = activeLibraryRuns[libraryId.value] ?: return false
+        run.stopRequested.set(true)
+        return true
+    }
+
+    fun resumeLibraryRun(libraryId: MediaServerLibraryId, mode: LibraryRunResumeMode): Boolean {
+        val run = activeLibraryRuns[libraryId.value]
+        if (run != null) {
+            run.pauseRequested.set(false)
+            if (mode == LibraryRunResumeMode.NEW) {
+                run.stopRequested.set(true)
+                libraryRunCheckpoints.remove(libraryId.value)
+                matchLibraryMetadata(libraryId, dryRun = false)
+            }
+            return true
+        }
+
+        return when (mode) {
+            LibraryRunResumeMode.CONTINUE -> {
+                if (libraryRunCheckpoints.containsKey(libraryId.value)) {
+                    matchLibraryMetadata(libraryId, dryRun = libraryRunCheckpoints[libraryId.value]?.dryRun ?: false)
+                    true
+                } else false
+            }
+            LibraryRunResumeMode.NEW -> {
+                libraryRunCheckpoints.remove(libraryId.value)
+                matchLibraryMetadata(libraryId, dryRun = false)
+                true
+            }
+        }
+    }
+
+    fun libraryRunControlStatus(libraryId: MediaServerLibraryId): LibraryRunControlStatus {
+        val run = activeLibraryRuns[libraryId.value]
+        val checkpoint = libraryRunCheckpoints[libraryId.value]
+        return LibraryRunControlStatus(
+            active = run != null,
+            paused = run?.pauseRequested?.get() == true,
+            stopRequested = run?.stopRequested?.get() == true,
+            hasCheckpoint = checkpoint != null,
+            checkpoint = checkpoint
+        )
     }
 
     fun latestLibraryRunSummary(libraryId: MediaServerLibraryId): LibraryRunSummary? {
@@ -789,6 +928,34 @@ class MetadataService(
         if (list.size > MAX_LIBRARY_RUN_SUMMARY_HISTORY) {
             list.removeAt(0)
         }
+    }
+
+    private fun saveCheckpoint(
+        libraryId: MediaServerLibraryId,
+        pageNumber: Int,
+        startIndexInPage: Int,
+        dryRun: Boolean
+    ) {
+        libraryRunCheckpoints[libraryId.value] = LibraryRunCheckpoint(
+            pageNumber = pageNumber.coerceAtLeast(1),
+            startIndexInPage = startIndexInPage.coerceAtLeast(0),
+            dryRun = dryRun,
+            updatedAtEpochMs = System.currentTimeMillis()
+        )
+    }
+
+    private suspend fun waitForRunWindow(
+        operation: String,
+        libraryId: MediaServerLibraryId,
+        runControl: ActiveLibraryRun
+    ): Boolean {
+        while (runControl.pauseRequested.get()) {
+            if (runControl.stopRequested.get()) return false
+            logger.warn { "Library run paused for ${libraryId.value}; waiting for resume." }
+            kotlinx.coroutines.delay(1000)
+        }
+        if (runControl.stopRequested.get()) return false
+        return waitForSafeScanWindow(operation, libraryId)
     }
 
     private fun normalizeSeriesLookupKey(value: String?): String {

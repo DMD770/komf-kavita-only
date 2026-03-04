@@ -15,6 +15,8 @@ import snd.komf.api.UnknownKomfProvider
 import snd.komf.api.metadata.KomfIdentifyRequest
 import snd.komf.api.metadata.KomfClearSkippedSeriesResponse
 import snd.komf.api.metadata.KomfLibraryRunSummary
+import snd.komf.api.metadata.KomfLibraryRunControlStatus
+import snd.komf.api.metadata.KomfLibraryRunResumeMode
 import snd.komf.api.metadata.KomfMetadataJobResponse
 import snd.komf.api.metadata.KomfMetadataSeriesSearchResult
 import snd.komf.api.metadata.KomfRetrySkippedSeriesResponse
@@ -114,6 +116,27 @@ class KomfMetadataClient(
         return ktor.get("$metadataApiPrefix/summary/library/$libraryId") {
             parameter("limit", limit)
         }.body()
+    }
+
+    suspend fun libraryRunControlStatus(libraryId: KomfServerLibraryId): KomfLibraryRunControlStatus {
+        return ktor.get("$metadataApiPrefix/control/library/$libraryId/status").body()
+    }
+
+    suspend fun pauseLibraryRun(libraryId: KomfServerLibraryId) {
+        ktor.post("$metadataApiPrefix/control/library/$libraryId/pause")
+    }
+
+    suspend fun resumeLibraryRun(
+        libraryId: KomfServerLibraryId,
+        mode: KomfLibraryRunResumeMode = KomfLibraryRunResumeMode.CONTINUE
+    ) {
+        ktor.post("$metadataApiPrefix/control/library/$libraryId/resume") {
+            parameter("mode", mode.name)
+        }
+    }
+
+    suspend fun stopLibraryRun(libraryId: KomfServerLibraryId) {
+        ktor.post("$metadataApiPrefix/control/library/$libraryId/stop")
     }
 
     suspend fun resetSeries(

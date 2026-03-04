@@ -22,6 +22,9 @@ import snd.komf.api.metadata.KomfIdentifyRequest
 import snd.komf.api.metadata.KomfClearSkippedSeriesResponse
 import snd.komf.api.metadata.KomfMetadataJobResponse
 import snd.komf.api.metadata.KomfLibraryRunSummary
+import snd.komf.api.metadata.KomfLibraryRunControlStatus
+import snd.komf.api.metadata.KomfLibraryRunCheckpoint
+import snd.komf.api.metadata.KomfLibraryRunResumeMode
 import snd.komf.api.metadata.KomfMetadataSeriesSearchResult
 import snd.komf.api.metadata.KomfRetrySkippedSeriesResponse
 import snd.komf.api.metadata.KomfSkippedSeriesEntry
@@ -57,6 +60,10 @@ class MetadataRoutes(
             clearSkippedSeriesRoute()
             latestLibrarySummaryRoute()
             librarySummaryHistoryRoute()
+            libraryRunControlStatusRoute()
+            pauseLibraryRunRoute()
+            resumeLibraryRunRoute()
+            stopLibraryRunRoute()
 
             resetSeriesRoute()
             resetLibraryRoute()
@@ -261,6 +268,63 @@ class MetadataRoutes(
         }
     }
 
+    private fun Route.libraryRunControlStatusRoute() {
+        get("/control/library/{libraryId}/status") {
+            if (!call.checkRateLimit()) return@get
+            val libraryId = MediaServerLibraryId(call.parameters.getOrFail("libraryId"))
+            val status = metadataServiceProvider.first().metadataServiceFor(libraryId.value).libraryRunControlStatus(libraryId)
+            call.respond(HttpStatusCode.OK, status.toDto())
+        }
+    }
+
+    private fun Route.pauseLibraryRunRoute() {
+        post("/control/library/{libraryId}/pause") {
+            if (!call.checkRateLimit()) return@post
+            val libraryId = MediaServerLibraryId(call.parameters.getOrFail("libraryId"))
+            val accepted = metadataServiceProvider.first().metadataServiceFor(libraryId.value).pauseLibraryRun(libraryId)
+            if (!accepted) {
+                call.respond(HttpStatusCode.Conflict, KomfErrorResponse("No active library run to pause"))
+                return@post
+            }
+            call.respond(HttpStatusCode.Accepted)
+        }
+    }
+
+    private fun Route.resumeLibraryRunRoute() {
+        post("/control/library/{libraryId}/resume") {
+            if (!call.checkRateLimit()) return@post
+            val libraryId = MediaServerLibraryId(call.parameters.getOrFail("libraryId"))
+            val mode = call.queryParameters["mode"]
+                ?.let { runCatching { KomfLibraryRunResumeMode.valueOf(it.uppercase()) }.getOrNull() }
+                ?: KomfLibraryRunResumeMode.CONTINUE
+            val accepted = metadataServiceProvider.first().metadataServiceFor(libraryId.value).resumeLibraryRun(
+                libraryId,
+                when (mode) {
+                    KomfLibraryRunResumeMode.CONTINUE -> snd.komf.mediaserver.metadata.LibraryRunResumeMode.CONTINUE
+                    KomfLibraryRunResumeMode.NEW -> snd.komf.mediaserver.metadata.LibraryRunResumeMode.NEW
+                }
+            )
+            if (!accepted) {
+                call.respond(HttpStatusCode.Conflict, KomfErrorResponse("No paused/checkpointed run to resume"))
+                return@post
+            }
+            call.respond(HttpStatusCode.Accepted)
+        }
+    }
+
+    private fun Route.stopLibraryRunRoute() {
+        post("/control/library/{libraryId}/stop") {
+            if (!call.checkRateLimit()) return@post
+            val libraryId = MediaServerLibraryId(call.parameters.getOrFail("libraryId"))
+            val accepted = metadataServiceProvider.first().metadataServiceFor(libraryId.value).stopLibraryRun(libraryId)
+            if (!accepted) {
+                call.respond(HttpStatusCode.Conflict, KomfErrorResponse("No active library run to stop"))
+                return@post
+            }
+            call.respond(HttpStatusCode.Accepted)
+        }
+    }
+
     private fun Route.resetSeriesRoute() {
         post("/reset/library/{libraryId}/series/{seriesId}") {
             if (!call.checkRateLimit()) return@post
@@ -311,5 +375,20 @@ class MetadataRoutes(
         processingErrors = processingErrors,
         unexpectedErrors = unexpectedErrors,
         skippedSeriesIds = skippedSeriesIds.map { snd.komf.api.KomfServerSeriesId(it.value) }
+    )
+
+    private fun snd.komf.mediaserver.metadata.LibraryRunControlStatus.toDto() = KomfLibraryRunControlStatus(
+        active = active,
+        paused = paused,
+        stopRequested = stopRequested,
+        hasCheckpoint = hasCheckpoint,
+        checkpoint = checkpoint?.let {
+            KomfLibraryRunCheckpoint(
+                pageNumber = it.pageNumber,
+                startIndexInPage = it.startIndexInPage,
+                dryRun = it.dryRun,
+                updatedAtEpochMs = it.updatedAtEpochMs
+            )
+        }
     )
 }
