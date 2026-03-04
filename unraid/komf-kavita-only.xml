@@ -1,0 +1,43 @@
+<?xml version="1.0"?>
+<Container version="2">
+  <Name>KOMF (Kavita Fork)</Name>
+  <Repository>dmd770/komf-kavita-only:latest</Repository>
+  <Registry>https://hub.docker.com/r/dmd770/komf-kavita-only</Registry>
+  <Network>bridge</Network>
+  <MyIP/>
+  <Shell>sh</Shell>
+  <Privileged>false</Privileged>
+  <Support>https://github.com/DMD770/komf-kavita-only</Support>
+  <Project>https://github.com/DMD770/komf-kavita-only</Project>
+  <Overview>KOMF fork focused on Kavita metadata/cover updates with safer scan handling and run controls.</Overview>
+  <Category>Tools:</Category>
+  <WebUI>http://[IP]:[PORT:8085]/</WebUI>
+  <TemplateURL>https://raw.githubusercontent.com/DMD770/komf-kavita-only/kavita-hardening/unraid/komf-kavita-only.xml</TemplateURL>
+  <Icon/>
+  <ExtraParams/>
+  <PostArgs/>
+  <CPUset/>
+  <DateInstalled/>
+  <DonateText/>
+  <DonateLink/>
+  <Requires/>
+
+  <Config Name="WebUI Port" Target="8085" Default="8085" Mode="tcp" Description="KOMF HTTP port" Type="Port" Display="always" Required="true" Mask="false">8085</Config>
+  <Config Name="Config Path" Target="/config" Default="/mnt/user/appdata/komf" Mode="rw" Description="Container path for application.yml and database.sqlite" Type="Path" Display="always" Required="true" Mask="false">/mnt/user/appdata/komf</Config>
+
+  <Config Name="Kavita Base URL" Target="KOMF_KAVITA_BASE_URI" Default="http://kavita:5000" Mode="" Description="Kavita URL reachable from this container" Type="Variable" Display="always" Required="true" Mask="false">http://kavita:5000</Config>
+  <Config Name="Kavita API Key" Target="KOMF_KAVITA_API_KEY" Default="" Mode="" Description="Kavita API key" Type="Variable" Display="always" Required="true" Mask="true"></Config>
+  <Config Name="Server Port" Target="KOMF_SERVER_PORT" Default="8085" Mode="" Description="Internal KOMF HTTP port (should match WebUI Port mapping)" Type="Variable" Display="advanced" Required="false" Mask="false">8085</Config>
+  <Config Name="Kavita-Only Mode" Target="KOMF_SERVER_KAVITA_ONLY" Default="true" Mode="" Description="Disable Komga runtime/routes and run Kavita-focused mode" Type="Variable" Display="always" Required="false" Mask="false">true</Config>
+
+  <Config Name="Update Events/Minute" Target="KOMF_KAVITA_API_RATE_LIMIT_UPDATE_EVENTS_PER_MINUTE" Default="30" Mode="" Description="Safer default for SQLite-backed deployments" Type="Variable" Display="advanced" Required="false" Mask="false">30</Config>
+  <Config Name="Scan Events/Minute" Target="KOMF_KAVITA_API_RATE_LIMIT_SCAN_EVENTS_PER_MINUTE" Default="5" Mode="" Description="Safer default for SQLite-backed deployments" Type="Variable" Display="advanced" Required="false" Mask="false">5</Config>
+  <Config Name="Deferred Library Scan Delay (sec)" Target="KOMF_KAVITA_SCAN_DEFERRED_LIBRARY_SCAN_DELAY_SECONDS" Default="300" Mode="" Description="Delay before deferred single library scan after run" Type="Variable" Display="advanced" Required="false" Mask="false">300</Config>
+
+  <Config Name="Wait For Active Scan" Target="KOMF_KAVITA_SCAN_WAIT_FOR_ACTIVE_SCAN_TO_FINISH" Default="true" Mode="" Description="Pause/wait while Kavita scan/maintenance is active" Type="Variable" Display="advanced" Required="false" Mask="false">true</Config>
+  <Config Name="Active Wait Timeout (sec)" Target="KOMF_KAVITA_SCAN_ACTIVE_WAIT_TIMEOUT_SECONDS" Default="1800" Mode="" Description="Max wait before aborting run" Type="Variable" Display="advanced" Required="false" Mask="false">1800</Config>
+  <Config Name="Active Poll Interval (sec)" Target="KOMF_KAVITA_SCAN_ACTIVE_POLL_INTERVAL_SECONDS" Default="2" Mode="" Description="Polling interval while waiting for scan/maintenance to finish" Type="Variable" Display="advanced" Required="false" Mask="false">2</Config>
+
+  <Config Name="Log Level" Target="KOMF_LOG_LEVEL" Default="INFO" Mode="" Description="TRACE, DEBUG, INFO, WARN, ERROR" Type="Variable" Display="advanced" Required="false" Mask="false">INFO</Config>
+  <Config Name="Timezone" Target="TZ" Default="UTC" Mode="" Description="Container timezone (optional)" Type="Variable" Display="advanced" Required="false" Mask="false">UTC</Config>
+</Container>

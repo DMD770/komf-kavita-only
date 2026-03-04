@@ -137,6 +137,12 @@ services:
     restart: unless-stopped
 ```
 
+### Unraid Template (Import URL)
+
+You can import this template in Unraid:
+
+- `https://raw.githubusercontent.com/DMD770/komf-kavita-only/kavita-hardening/unraid/komf-kavita-only.xml`
+
 ### Docker Image Publish Targets
 
 This fork's CI publishes container images to:
