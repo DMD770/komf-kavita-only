@@ -3,6 +3,7 @@ package snd.komf.mediaserver.metadata
 import io.github.oshai.kotlinlogging.KotlinLogging
 import io.ktor.client.plugins.*
 import io.ktor.client.statement.*
+import io.ktor.http.HttpStatusCode
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -99,8 +100,8 @@ class MetadataService(
         edition: String?
     ): MetadataJobId {
         val jobId = launchJob(seriesId) { eventFlow ->
-            val series = mediaServerClient.getSeries(seriesId)
-            val books = mediaServerClient.getBooks(seriesId)
+            val context = loadSeriesContextOrSkip(seriesId) ?: return@launchJob
+            val (series, books) = context
             val seriesTitle = series.metadata.title.ifBlank { series.name }
             logger.info { "Setting metadata for series \"${seriesTitle}\" ${series.id} using $providerName $providerSeriesId" }
             val provider =
@@ -178,8 +179,8 @@ class MetadataService(
     ): MetadataJobId {
 
         val jobId = launchJob(seriesId) { eventFlow ->
-            val series = mediaServerClient.getSeries(seriesId)
-            val books = mediaServerClient.getBooks(seriesId)
+            val context = loadSeriesContextOrSkip(seriesId) ?: return@launchJob
+            val (series, books) = context
             val seriesTitle = series.metadata.title.ifBlank { series.name }
 
             val existingMatch = seriesMatchRepository.findManualFor(seriesId)
@@ -471,6 +472,41 @@ class MetadataService(
         }
 
         return jobId
+    }
+
+    private suspend fun loadSeriesContextOrSkip(
+        seriesId: MediaServerSeriesId
+    ): Pair<MediaServerSeries, Collection<MediaServerBook>>? {
+        return try {
+            val series = mediaServerClient.getSeries(seriesId)
+            val books = mediaServerClient.getBooks(seriesId)
+            series to books
+        } catch (e: Exception) {
+            if (isMissingSeriesError(e)) {
+                logger.warn { "Skipping series ${seriesId.value}: not found (likely stale ID / 204)." }
+                null
+            } else {
+                throw e
+            }
+        }
+    }
+
+    private fun isMissingSeriesError(e: Throwable): Boolean {
+        if (e::class.simpleName == "KavitaResourceNotFoundException") return true
+
+        if (e is ResponseException) {
+            val s = e.response.status
+            if (s == HttpStatusCode.NoContent || s == HttpStatusCode.NotFound) return true
+        }
+
+        if (e::class.simpleName == "NoTransformationFoundException" &&
+            (e.message?.contains("204 No Content") == true)
+        ) {
+            return true
+        }
+
+        val c = e.cause
+        return c != null && c !== e && isMissingSeriesError(c)
     }
 
 

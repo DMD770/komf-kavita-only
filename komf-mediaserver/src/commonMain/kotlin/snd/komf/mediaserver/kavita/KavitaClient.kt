@@ -18,12 +18,14 @@ import snd.komf.mediaserver.kavita.model.KavitaChapter
 import snd.komf.mediaserver.kavita.model.KavitaChapterId
 import snd.komf.mediaserver.kavita.model.KavitaLibrary
 import snd.komf.mediaserver.kavita.model.KavitaLibraryId
+import snd.komf.mediaserver.kavita.model.KavitaPublicationStatus
 import snd.komf.mediaserver.kavita.model.KavitaSeries
 import snd.komf.mediaserver.kavita.model.KavitaSeriesDetails
 import snd.komf.mediaserver.kavita.model.KavitaSeriesId
 import snd.komf.mediaserver.kavita.model.KavitaSeriesMetadata
 import snd.komf.mediaserver.kavita.model.KavitaVolume
 import snd.komf.mediaserver.kavita.model.KavitaVolumeId
+import snd.komf.mediaserver.kavita.model.KavitaAgeRating.UNKNOWN
 import snd.komf.mediaserver.kavita.model.request.KavitaChapterMetadataUpdateRequest
 import snd.komf.mediaserver.kavita.model.request.KavitaCoverUploadRequest
 import snd.komf.mediaserver.kavita.model.request.KavitaSeriesMetadataUpdateRequest
@@ -51,7 +53,11 @@ class KavitaClient(
     )
 
     suspend fun getSeries(seriesId: KavitaSeriesId): KavitaSeries {
-        return ktor.get("api/series/${seriesId.value}").body()
+        val response = ktor.get("api/series/${seriesId.value}")
+        if (response.status == HttpStatusCode.NoContent || response.status == HttpStatusCode.NotFound) {
+            throw KavitaResourceNotFoundException()
+        }
+        return response.body()
     }
 
     suspend fun getSeries(libraryId: KavitaLibraryId, page: Int): KavitaPage<KavitaSeries> {
@@ -126,9 +132,16 @@ class KavitaClient(
 
 
     suspend fun getSeriesMetadata(seriesId: KavitaSeriesId): KavitaSeriesMetadata {
-        return ktor.get("api/series/metadata") {
+        val response = ktor.get("api/series/metadata") {
             parameter("seriesId", seriesId.value)
-        }.body()
+        }
+        if (response.status == HttpStatusCode.NoContent) {
+            return emptySeriesMetadata(seriesId)
+        }
+        if (response.status == HttpStatusCode.NotFound) {
+            throw KavitaResourceNotFoundException()
+        }
+        return response.body()
     }
 
     suspend fun getSeriesDetails(seriesId: KavitaSeriesId): KavitaSeriesDetails {
@@ -281,6 +294,56 @@ class KavitaClient(
             is IOException -> true
             else -> false
         }
+    }
+
+    private fun emptySeriesMetadata(seriesId: KavitaSeriesId): KavitaSeriesMetadata {
+        return KavitaSeriesMetadata(
+            id = 0,
+            seriesId = seriesId,
+            summary = "",
+            genres = emptySet(),
+            tags = emptySet(),
+            writers = emptySet(),
+            coverArtists = emptySet(),
+            publishers = emptySet(),
+            characters = emptySet(),
+            pencillers = emptySet(),
+            inkers = emptySet(),
+            imprints = emptySet(),
+            colorists = emptySet(),
+            letterers = emptySet(),
+            editors = emptySet(),
+            translators = emptySet(),
+            teams = emptySet(),
+            locations = emptySet(),
+            ageRating = UNKNOWN,
+            releaseYear = 0,
+            language = "",
+            maxCount = 0,
+            totalCount = 0,
+            publicationStatus = KavitaPublicationStatus.ONGOING,
+            webLinks = "",
+            languageLocked = false,
+            summaryLocked = false,
+            ageRatingLocked = false,
+            publicationStatusLocked = false,
+            genresLocked = false,
+            tagsLocked = false,
+            writerLocked = false,
+            characterLocked = false,
+            coloristLocked = false,
+            editorLocked = false,
+            inkerLocked = false,
+            imprintLocked = false,
+            lettererLocked = false,
+            pencillerLocked = false,
+            publisherLocked = false,
+            translatorLocked = false,
+            teamLocked = false,
+            locationLocked = false,
+            coverArtistLocked = false,
+            releaseYearLocked = false
+        )
     }
 
     companion object {
