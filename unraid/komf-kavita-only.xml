@@ -1,8 +1,8 @@
 <?xml version="1.0"?>
 <Container version="2">
-  <Name>KOMF (Kavita Fork)</Name>
+  <Name>KOMF Kavita Fork</Name>
   <Repository>devilmaydie770/komf-kavita-only:kavita-hardening</Repository>
-  <Registry>https://hub.docker.com/r/devilmaydie770/komf-kavita-only</Registry>
+  <Registry/>
   <Network>bridge</Network>
   <MyIP/>
   <Shell>sh</Shell>
@@ -10,8 +10,8 @@
   <Support>https://github.com/DMD770/komf-kavita-only</Support>
   <Project>https://github.com/DMD770/komf-kavita-only</Project>
   <Overview>KOMF fork focused on Kavita metadata/cover updates with safer scan handling and run controls.</Overview>
-  <Category>Tools:</Category>
-  <WebUI>http://[IP]:[PORT:8095]/</WebUI>
+  <Category>Tools</Category>
+  <WebUI>http://[IP]:[PORT:8085]/</WebUI>
   <TemplateURL>https://raw.githubusercontent.com/DMD770/komf-kavita-only/kavita-hardening/unraid/komf-kavita-only.xml</TemplateURL>
   <Icon/>
   <ExtraParams/>
