@@ -20,6 +20,7 @@ import snd.komf.mediaserver.kavita.model.KavitaVolume
 import snd.komf.mediaserver.kavita.model.request.KavitaChapterMetadataUpdateRequest
 import snd.komf.mediaserver.kavita.model.request.KavitaSeriesMetadataUpdateRequest
 import snd.komf.mediaserver.kavita.model.request.KavitaSeriesUpdateRequest
+import snd.komf.mediaserver.kavita.model.effectiveVolumeNumber
 import snd.komf.mediaserver.kavita.model.toKavitaChapterId
 import snd.komf.mediaserver.kavita.model.toKavitaLibraryId
 import snd.komf.mediaserver.kavita.model.toKavitaSeriesId
@@ -248,7 +249,11 @@ private fun KavitaSeries.toMediaServerSeries(metadata: KavitaSeriesMetadata, boo
     )
 }
 
-private fun KavitaChapter.toMediaServerBook(volume: KavitaVolume): MediaServerBook {
+internal fun resolveKavitaBookNumber(volume: KavitaVolume, chapterNumber: String?): Int {
+    return volume.effectiveVolumeNumber() ?: chapterNumber?.toIntOrNull() ?: 0
+}
+
+internal fun KavitaChapter.toMediaServerBook(volume: KavitaVolume): MediaServerBook {
     val filePath = Path.of(files.first().filePath)
     val fileName = filePath.fileName.nameWithoutExtension
 
@@ -259,7 +264,7 @@ private fun KavitaChapter.toMediaServerBook(volume: KavitaVolume): MediaServerBo
         seriesTitle = title,
         name = fileName,
         url = filePath.toString(),
-        number = number?.toIntOrNull() ?: 0,
+        number = resolveKavitaBookNumber(volume, number),
         oneshot = false,
         metadata = toMediaServerBookMetadata(),
         deleted = false,

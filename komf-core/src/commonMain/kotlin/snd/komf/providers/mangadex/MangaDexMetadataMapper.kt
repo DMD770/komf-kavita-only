@@ -206,6 +206,7 @@ class MangaDexMetadataMapper(
 
         val books = covers
             .filter { it.attributes.locale in coverLanguages }
+            .filter { it.attributes.volume != null }
             .groupBy { it.attributes.volume }.values
             .map { coverArtToBook(it.first()) }
 
@@ -238,6 +239,21 @@ class MangaDexMetadataMapper(
             type = null,
             edition = null
         )
+    }
+
+    fun selectSeriesCoverArt(covers: Collection<MangaDexCoverArt>): MangaDexCoverArt? {
+        val nonVolumeCovers = covers.filter { it.attributes.volume == null }
+        return pickCoverByLanguage(nonVolumeCovers) ?: pickCoverByLanguage(covers)
+    }
+
+    private fun pickCoverByLanguage(covers: Collection<MangaDexCoverArt>): MangaDexCoverArt? {
+        if (covers.isEmpty()) return null
+        if (coverLanguages.isEmpty()) return covers.first()
+
+        coverLanguages.forEach { language ->
+            covers.firstOrNull { it.attributes.locale == language }?.let { return it }
+        }
+        return covers.first()
     }
 
 

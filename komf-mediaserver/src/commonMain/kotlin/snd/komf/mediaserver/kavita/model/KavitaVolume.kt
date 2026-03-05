@@ -19,3 +19,13 @@ data class KavitaVolume(
     val chapters: Collection<KavitaChapter>,
 )
 
+private val volumeNameNumberRegex = """(?i)\b(?:vol(?:ume)?\.?\s*)?0*(\d+)\b""".toRegex()
+
+fun KavitaVolume.effectiveVolumeNumber(): Int? {
+    if (minNumber.isFinite() && minNumber > 0f) {
+        val asInt = minNumber.toInt()
+        if (minNumber == asInt.toFloat()) return asInt
+    }
+
+    return volumeNameNumberRegex.find(name)?.groupValues?.getOrNull(1)?.toIntOrNull()
+}

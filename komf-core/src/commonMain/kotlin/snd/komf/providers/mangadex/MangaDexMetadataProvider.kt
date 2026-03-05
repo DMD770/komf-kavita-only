@@ -25,16 +25,18 @@ class MangaDexMetadataProvider(
 
     override suspend fun getSeriesMetadata(seriesId: ProviderSeriesId): ProviderSeriesMetadata {
         val series = client.getSeries(MangaDexMangaId(seriesId.value))
+        val covers = getAllCovers(series.id)
         val cover = if (fetchSeriesCovers) {
-            series.getCoverArt()?.let { client.getCover(series.id, it.attributes.fileName) }
+            metadataMapper.selectSeriesCoverArt(covers)?.let { client.getCover(series.id, it.attributes.fileName) }
         } else null
 
-        return metadataMapper.toSeriesMetadata(series, getAllCovers(series.id), cover)
+        return metadataMapper.toSeriesMetadata(series, covers, cover)
     }
 
     override suspend fun getSeriesCover(seriesId: ProviderSeriesId): Image? {
         val series = client.getSeries(MangaDexMangaId(seriesId.value))
-        return series.getCoverArt()?.let { client.getCover(series.id, it.attributes.fileName) }
+        val covers = getAllCovers(series.id)
+        return metadataMapper.selectSeriesCoverArt(covers)?.let { client.getCover(series.id, it.attributes.fileName) }
     }
 
     override suspend fun getBookMetadata(seriesId: ProviderSeriesId, bookId: ProviderBookId): ProviderBookMetadata {
@@ -59,10 +61,12 @@ class MangaDexMetadataProvider(
             }
             ?.let {
                 val series = client.getSeries(it.id)
+                val covers = getAllCovers(series.id)
                 val cover = if (fetchSeriesCovers)
-                    series.getCoverArt()?.let { coverArt -> client.getCover(series.id, coverArt.attributes.fileName) }
+                    metadataMapper.selectSeriesCoverArt(covers)
+                        ?.let { coverArt -> client.getCover(series.id, coverArt.attributes.fileName) }
                 else null
-                metadataMapper.toSeriesMetadata(series, getAllCovers(series.id), cover)
+                metadataMapper.toSeriesMetadata(series, covers, cover)
             }
     }
 
