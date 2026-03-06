@@ -21,6 +21,7 @@ import snd.komf.mediaserver.kavita.model.request.KavitaChapterMetadataUpdateRequ
 import snd.komf.mediaserver.kavita.model.request.KavitaSeriesMetadataUpdateRequest
 import snd.komf.mediaserver.kavita.model.request.KavitaSeriesUpdateRequest
 import snd.komf.mediaserver.kavita.model.effectiveVolumeNumber
+import snd.komf.mediaserver.kavita.model.resolveVolumeNumber
 import snd.komf.mediaserver.kavita.model.toKavitaChapterId
 import snd.komf.mediaserver.kavita.model.toKavitaLibraryId
 import snd.komf.mediaserver.kavita.model.toKavitaSeriesId
@@ -97,7 +98,14 @@ class KavitaMediaServerClientAdapter(
 
     override suspend fun getBooks(seriesId: MediaServerSeriesId): Collection<MediaServerBook> {
         return kavitaClient.getVolumes(seriesId.toKavitaSeriesId())
-            .flatMap { volume -> volume.chapters.map { it.toMediaServerBook(volume) } }
+            .flatMap { volume ->
+                val resolution = volume.resolveVolumeNumber()
+                logger.info {
+                    "volume id=${volume.id.value} name='${volume.name}' number=${volume.minNumber} " +
+                        "effective=${resolution.effectiveNumber?.toString() ?: "null"} source=${resolution.source.logValue}"
+                }
+                volume.chapters.map { it.toMediaServerBook(volume) }
+            }
     }
 
     override suspend fun getBookThumbnails(bookId: MediaServerBookId): Collection<MediaServerBookThumbnail> {
@@ -176,6 +184,7 @@ class KavitaMediaServerClientAdapter(
         lock: Boolean
     ): MediaServerBookThumbnail? {
         val chapter = kavitaClient.getChapter(bookId.toKavitaChapterId())
+        logger.info { "uploading volume cover volumeId=${chapter.volumeId.value} bookId=${bookId.value}" }
         kavitaClient.uploadVolumeCover(chapter.volumeId, thumbnail, lock)
         return null
     }
@@ -249,8 +258,8 @@ private fun KavitaSeries.toMediaServerSeries(metadata: KavitaSeriesMetadata, boo
     )
 }
 
-internal fun resolveKavitaBookNumber(volume: KavitaVolume, chapterNumber: String?): Int {
-    return volume.effectiveVolumeNumber() ?: chapterNumber?.toIntOrNull() ?: 0
+internal fun resolveKavitaBookNumber(volume: KavitaVolume): Int {
+    return volume.effectiveVolumeNumber() ?: 0
 }
 
 internal fun KavitaChapter.toMediaServerBook(volume: KavitaVolume): MediaServerBook {
@@ -264,7 +273,7 @@ internal fun KavitaChapter.toMediaServerBook(volume: KavitaVolume): MediaServerB
         seriesTitle = title,
         name = fileName,
         url = filePath.toString(),
-        number = resolveKavitaBookNumber(volume, number),
+        number = resolveKavitaBookNumber(volume),
         oneshot = false,
         metadata = toMediaServerBookMetadata(),
         deleted = false,

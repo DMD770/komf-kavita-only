@@ -47,7 +47,7 @@ class MetadataUpdater(
     suspend fun updateMetadata(series: MediaServerSeries, metadata: SeriesAndBookMetadata, deferScan: Boolean) {
         val processedMetadata = postProcessor.process(metadata)
         updateSeriesMetadata(series, processedMetadata.seriesMetadata)
-        updateBookMetadata(unprocessedMetadata = metadata, processedMetadata = processedMetadata)
+        updateBookMetadata(series = series, unprocessedMetadata = metadata, processedMetadata = processedMetadata)
 
         if (updateModes.any { it in requireMetadataRefresh })
             mediaServerClient.refreshMetadata(series.libraryId, series.id, deferScan = deferScan)
@@ -94,19 +94,23 @@ class MetadataUpdater(
     }
 
     private suspend fun updateBookMetadata(
+        series: MediaServerSeries,
         unprocessedMetadata: SeriesAndBookMetadata,
         processedMetadata: SeriesAndBookMetadata
     ) {
         val bookIdToWriteSeriesMetadata = bookToWriteSeriesMetadata(unprocessedMetadata.bookMetadata)
+        val uploadedByBook = mutableMapOf<MediaServerBookId, Boolean>()
 
         processedMetadata.bookMetadata.forEach { (book, metadata) ->
-            updateBookMetadata(
+            uploadedByBook[book.id] = updateBookMetadata(
                 book,
                 metadata,
                 processedMetadata.seriesMetadata,
                 book.id == bookIdToWriteSeriesMetadata
             )
         }
+
+        logVolumeCoverSummary(series, processedMetadata, uploadedByBook)
     }
 
     private suspend fun updateBookMetadata(
@@ -114,7 +118,7 @@ class MetadataUpdater(
         metadata: BookMetadata?,
         seriesMeta: SeriesMetadata,
         writeSeriesMetadata: Boolean
-    ) {
+    ): Boolean {
         logger.info { "updating book ${book.name}" }
         updateModes.forEach { mode ->
             when (mode) {
@@ -152,6 +156,29 @@ class MetadataUpdater(
                 bookId = book.id,
                 thumbnailId = thumbnailId,
             )
+        }
+        return newThumbnail != null
+    }
+
+    private fun logVolumeCoverSummary(
+        series: MediaServerSeries,
+        processedMetadata: SeriesAndBookMetadata,
+        uploadedByBook: Map<MediaServerBookId, Boolean>
+    ) {
+        val groups = processedMetadata.bookMetadata.entries
+            .groupBy { (book, _) ->
+                if (book.number > 0) "n:${book.number}" else "b:${book.id.value}"
+            }
+
+        val total = groups.size
+        val effectiveParsed = groups.count { (key, _) -> key.startsWith("n:") }
+        val matched = groups.count { (_, entries) -> entries.any { (_, metadata) -> metadata?.thumbnail != null } }
+        val uploaded = groups.count { (_, entries) -> entries.any { (book, _) -> uploadedByBook[book.id] == true } }
+        val skipped = total - uploaded
+
+        logger.info {
+            "series ${series.id.value} volume-cover summary: total=$total, effectiveParsed=$effectiveParsed, " +
+                "matched=$matched, uploaded=$uploaded, skipped=$skipped"
         }
     }
 

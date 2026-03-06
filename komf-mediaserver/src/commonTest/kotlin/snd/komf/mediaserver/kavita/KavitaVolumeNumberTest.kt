@@ -37,7 +37,7 @@ class KavitaVolumeNumberTest {
     @Test
     fun `book number resolver uses volume fallback for mapping`() {
         val volume = testVolume(name = "9")
-        assertEquals(9, resolveKavitaBookNumber(volume, chapterNumber = null))
+        assertEquals(9, resolveKavitaBookNumber(volume))
     }
 
     private fun testVolume(
