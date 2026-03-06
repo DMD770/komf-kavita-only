@@ -297,11 +297,13 @@ class MetadataService(
                 val deferredScans = mutableListOf<Pair<MediaServerLibraryId, MediaServerSeriesId>>()
                 var abortedBySafetyTimeout = false
                 var stoppedByUser = false
+                var stopCheckpoint: Pair<Int, Int>? = null
                 var hasMorePages = true
                 pageLoop@ do {
                     if (runControl.stopRequested.get()) {
                         stoppedByUser = true
                         saveCheckpoint(libraryId, pageNumber, pageStartIndex, effectiveDryRun)
+                        stopCheckpoint = pageNumber to pageStartIndex
                         break@pageLoop
                     }
                     if (!waitForRunWindow("match library", libraryId, runControl)) {
@@ -324,6 +326,7 @@ class MetadataService(
                         if (runControl.stopRequested.get()) {
                             stoppedByUser = true
                             saveCheckpoint(libraryId, pageNumber, nextIndexForCheckpoint, effectiveDryRun)
+                            stopCheckpoint = pageNumber to nextIndexForCheckpoint
                             break@pageLoop
                         }
                         if (!waitForRunWindow("match library", libraryId, runControl)) {
@@ -399,7 +402,12 @@ class MetadataService(
                 }
             }
             if (stoppedByUser) {
-                logger.warn { "Library match for ${libraryId.value} stopped by user request." }
+                val checkpointLog = stopCheckpoint?.let { (page, index) ->
+                    "checkpoint(page=$page, index=$index)"
+                } ?: "checkpoint(unavailable)"
+                logger.warn {
+                    "Library match for ${libraryId.value} stopped by user request (graceful stop after current series, $checkpointLog)."
+                }
             }
             if (!stoppedByUser && !abortedBySafetyTimeout) {
                 libraryRunCheckpoints.remove(libraryId.value)
@@ -521,6 +529,9 @@ class MetadataService(
     fun stopLibraryRun(libraryId: MediaServerLibraryId): Boolean {
         val run = activeLibraryRuns[libraryId.value] ?: return false
         run.stopRequested.set(true)
+        logger.info {
+            "Graceful stop requested for library ${libraryId.value}. Current series will finish, then run will stop and checkpoint."
+        }
         return true
     }
 
