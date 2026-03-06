@@ -236,20 +236,30 @@ class KavitaClient(
     }
 
     suspend fun resetChapterLock(chapterId: KavitaChapterId) {
-        if (resetChapterLockWarningLogged.compareAndSet(false, true)) {
-            logger.warn {
-                "Using deprecated Kavita endpoint api/upload/reset-chapter-lock. " +
-                    "If cover lock reset breaks after a Kavita upgrade, verify replacement endpoint."
-            }
-        }
-        withTransientRetry("api/upload/reset-chapter-lock") {
-            ktor.post("api/upload/reset-chapter-lock") {
-                contentType(ContentType.Application.Json)
-                setBody(buildJsonObject {
-                    put("id", chapterId.value)
-                    put("url", "")
-                })
-
+        withTransientRetry("api/upload/chapter|api/upload/reset-chapter-lock") {
+            try {
+                ktor.post("api/upload/chapter") {
+                    contentType(ContentType.Application.Json)
+                    setBody(KavitaCoverUploadRequest(id = chapterId.value, url = "", lockCover = false))
+                }
+            } catch (e: ResponseException) {
+                if (e.response.status == HttpStatusCode.NotFound || e.response.status == HttpStatusCode.MethodNotAllowed) {
+                    if (legacyResetChapterLockWarningLogged.compareAndSet(false, true)) {
+                        logger.warn {
+                            "Falling back to deprecated Kavita endpoint api/upload/reset-chapter-lock. " +
+                                "Upgrade Kavita to keep using api/upload/chapter."
+                        }
+                    }
+                    ktor.post("api/upload/reset-chapter-lock") {
+                        contentType(ContentType.Application.Json)
+                        setBody(buildJsonObject {
+                            put("id", chapterId.value)
+                            put("url", "")
+                        })
+                    }
+                } else {
+                    throw e
+                }
             }
         }
     }
@@ -349,7 +359,7 @@ class KavitaClient(
 
     companion object {
         private val logger = KotlinLogging.logger {}
-        private val resetChapterLockWarningLogged = AtomicBoolean(false)
+        private val legacyResetChapterLockWarningLogged = AtomicBoolean(false)
     }
 }
 

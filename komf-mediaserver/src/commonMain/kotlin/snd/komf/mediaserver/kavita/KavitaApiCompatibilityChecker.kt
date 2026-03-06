@@ -64,16 +64,16 @@ class KavitaApiCompatibilityChecker(
             }
         }.result
 
-        checks += runCheck("POST api/upload/reset-chapter-lock (deprecated)") {
+        checks += runCheck("POST api/upload/chapter|api/upload/reset-chapter-lock (cover reset)") {
             val status = runExpectedClientError {
                 kavitaClient.resetChapterLock(KavitaChapterId(0))
             }
             when (status) {
-                null -> CheckOutcome.Warn("endpoint accepted request; still available")
+                null -> CheckOutcome.Pass("request accepted")
                 HttpStatusCode.NotFound, HttpStatusCode.MethodNotAllowed ->
-                    CheckOutcome.Warn("deprecated endpoint unavailable (${status.value})")
+                    CheckOutcome.Fail("endpoint missing or method changed (${status.value})")
 
-                else -> CheckOutcome.Warn("deprecated endpoint reachable (${status.value})")
+                else -> CheckOutcome.Pass("endpoint reachable (${status.value})")
             }
         }.result
 
