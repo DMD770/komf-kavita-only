@@ -197,6 +197,7 @@ class KavitaClient(
     suspend fun uploadVolumeCover(volumeId: KavitaVolumeId, cover: Image, lockCover: Boolean) {
         updatesRateLimiter.acquire()
         val base64Image = Base64.getEncoder().encodeToString(cover.bytes)
+        logger.info { "POST /api/upload/volume volumeId=${volumeId.value}" }
         withTransientRetry("api/upload/volume") {
             ktor.post("api/upload/volume") {
                 contentType(ContentType.Application.Json)
