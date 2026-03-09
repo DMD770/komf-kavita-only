@@ -8,7 +8,9 @@ import snd.komf.api.config.BookMetadataConfigDto
 import snd.komf.api.config.DiscordConfigDto
 import snd.komf.api.config.EventListenerConfigDto
 import snd.komf.api.config.KavitaConfigDto
+import snd.komf.api.config.KavitaSafeFullLibraryConfigDto
 import snd.komf.api.config.KomfConfig
+import snd.komf.api.config.KomfKavitaSafeFullLibraryScanPolicy
 import snd.komf.api.config.KomgaConfigDto
 import snd.komf.api.config.MangaBakaConfigDto
 import snd.komf.api.config.MangaBakaDatabaseDto
@@ -71,6 +73,11 @@ class AppConfigMapper {
             baseUri = config.baseUri,
             eventListener = toDto(config.eventListener),
             metadataUpdate = toDto(config.metadataUpdate),
+            safeFullLibrary = KavitaSafeFullLibraryConfigDto(
+                enabled = config.safeFullLibrary.enabled,
+                scanPolicy = KomfKavitaSafeFullLibraryScanPolicy.valueOf(config.safeFullLibrary.scanPolicy.name),
+                failFastOnSqliteErrors = config.safeFullLibrary.failFastOnSqliteErrors
+            ),
         )
     }
 

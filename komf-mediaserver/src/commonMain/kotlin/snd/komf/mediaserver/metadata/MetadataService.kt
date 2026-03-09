@@ -15,6 +15,7 @@ import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.flow.takeWhile
 import kotlinx.coroutines.launch
 import snd.komf.mediaserver.MediaServerClient
+import snd.komf.mediaserver.config.KavitaSafeFullLibraryScanPolicy
 import snd.komf.mediaserver.jobs.KomfJobTracker
 import snd.komf.mediaserver.jobs.MetadataJobEvent
 import snd.komf.mediaserver.jobs.MetadataJobEvent.CompletionEvent
@@ -25,6 +26,12 @@ import snd.komf.mediaserver.jobs.MetadataJobEvent.ProviderCompletedEvent
 import snd.komf.mediaserver.jobs.MetadataJobEvent.ProviderErrorEvent
 import snd.komf.mediaserver.jobs.MetadataJobEvent.ProviderSeriesEvent
 import snd.komf.mediaserver.jobs.MetadataJobId
+import snd.komf.mediaserver.kavita.KavitaSqliteCorruptionException
+import snd.komf.mediaserver.kavita.KavitaRunMetrics
+import snd.komf.mediaserver.kavita.KavitaRunMetricsSnapshot
+import snd.komf.mediaserver.kavita.KavitaMediaServerClientAdapter
+import snd.komf.mediaserver.metadata.repository.LibraryRunCheckpointRepository
+import snd.komf.mediaserver.metadata.repository.LibrarySeriesRunResultRepository
 import snd.komf.mediaserver.metadata.repository.SeriesMatchRepository
 import snd.komf.mediaserver.model.MediaServerBook
 import snd.komf.mediaserver.model.MediaServerLibraryId
@@ -140,8 +147,15 @@ data class LibraryRunCheckpoint(
     val pageNumber: Int,
     val startIndexInPage: Int,
     val dryRun: Boolean,
+    val lastCompletedSeriesId: MediaServerSeriesId? = null,
     val updatedAtEpochMs: Long,
 )
+
+enum class LibrarySeriesRunStatus {
+    APPLIED,
+    SKIPPED,
+    FATAL,
+}
 
 enum class LibraryRunResumeMode {
     CONTINUE,
@@ -170,6 +184,10 @@ class MetadataService(
     private val seriesMatchRepository: SeriesMatchRepository,
     private val libraryType: MediaType,
     private val jobTracker: KomfJobTracker,
+    private val safeFullLibraryEnabled: Boolean = false,
+    private val safeFullLibraryScanPolicy: KavitaSafeFullLibraryScanPolicy = KavitaSafeFullLibraryScanPolicy.NONE,
+    private val runCheckpointRepository: LibraryRunCheckpointRepository? = null,
+    private val seriesRunResultRepository: LibrarySeriesRunResultRepository? = null,
 ) {
     private val coroutineScope = CoroutineScope(Dispatchers.Default + SupervisorJob())
     private val skippedSeriesByLibrary = ConcurrentHashMap<String, MutableList<SkippedSeriesEntry>>()
@@ -260,19 +278,34 @@ class MetadataService(
             val runControl = ActiveLibraryRun()
             activeLibraryRuns[libraryId.value] = runControl
             try {
-                val checkpoint = libraryRunCheckpoints.remove(libraryId.value)
+                val checkpoint = getCheckpoint(libraryId)
                 val startPageNumber = 1
                 val startIndexInPage = 0
                 val effectiveDryRun = dryRun
+                val resumedFromCheckpoint = checkpoint != null && checkpoint.dryRun == effectiveDryRun
+                val kavitaAdapter = mediaServerClient as? KavitaMediaServerClientAdapter
+                val runMetrics = kavitaAdapter?.let {
+                    KavitaRunMetrics(
+                        libraryId = libraryId.value,
+                        dryRun = effectiveDryRun,
+                        resumedFromCheckpoint = resumedFromCheckpoint
+                    )
+                }
+                kavitaAdapter?.setActiveRunMetrics(runMetrics)
+
+                logger.info {
+                    "Starting library match for ${libraryId.value} " +
+                        "(dryRun=$effectiveDryRun, safeFullLibrary=$safeFullLibraryEnabled, scanPolicy=$safeFullLibraryScanPolicy)"
+                }
 
                 if (runControl.stopRequested.get()) {
                     logger.warn { "Skipping library match for ${libraryId.value}: stop was requested before start." }
-                    saveCheckpoint(libraryId, startPageNumber, startIndexInPage, effectiveDryRun)
+                    saveCheckpoint(libraryId, startPageNumber, startIndexInPage, effectiveDryRun, null)
                     return@launch
                 }
                 if (!waitForRunWindow("match library", libraryId, runControl)) {
                     logger.warn { "Skipping library match for ${libraryId.value}: interrupted before start." }
-                    saveCheckpoint(libraryId, startPageNumber, startIndexInPage, effectiveDryRun)
+                    saveCheckpoint(libraryId, startPageNumber, startIndexInPage, effectiveDryRun, null)
                     return@launch
                 }
 
@@ -297,18 +330,19 @@ class MetadataService(
                 val deferredScans = mutableListOf<Pair<MediaServerLibraryId, MediaServerSeriesId>>()
                 var abortedBySafetyTimeout = false
                 var stoppedByUser = false
+                var stoppedByFatal = false
                 var stopCheckpoint: Pair<Int, Int>? = null
                 var hasMorePages = true
                 pageLoop@ do {
                     if (runControl.stopRequested.get()) {
                         stoppedByUser = true
-                        saveCheckpoint(libraryId, pageNumber, pageStartIndex, effectiveDryRun)
+                        saveCheckpoint(libraryId, pageNumber, pageStartIndex, effectiveDryRun, checkpoint?.lastCompletedSeriesId)
                         stopCheckpoint = pageNumber to pageStartIndex
                         break@pageLoop
                     }
                     if (!waitForRunWindow("match library", libraryId, runControl)) {
                         abortedBySafetyTimeout = true
-                        saveCheckpoint(libraryId, pageNumber, pageStartIndex, effectiveDryRun)
+                        saveCheckpoint(libraryId, pageNumber, pageStartIndex, effectiveDryRun, checkpoint?.lastCompletedSeriesId)
                         break@pageLoop
                     }
                     val page = mediaServerClient.getSeries(libraryId, pageNumber)
@@ -325,13 +359,13 @@ class MetadataService(
                         }
                         if (runControl.stopRequested.get()) {
                             stoppedByUser = true
-                            saveCheckpoint(libraryId, pageNumber, nextIndexForCheckpoint, effectiveDryRun)
+                            saveCheckpoint(libraryId, pageNumber, nextIndexForCheckpoint, effectiveDryRun, seriesEntry.id)
                             stopCheckpoint = pageNumber to nextIndexForCheckpoint
                             break@pageLoop
                         }
                         if (!waitForRunWindow("match library", libraryId, runControl)) {
                             abortedBySafetyTimeout = true
-                            saveCheckpoint(libraryId, pageNumber, nextIndexForCheckpoint, effectiveDryRun)
+                            saveCheckpoint(libraryId, pageNumber, nextIndexForCheckpoint, effectiveDryRun, seriesEntry.id)
                             break
                         }
                         runCatching {
@@ -339,6 +373,7 @@ class MetadataService(
                         var sawProviderCompleted = false
                         var sawProviderError = false
                         var sawProcessingError = false
+                        var sawFatalProcessingError = false
 
                         jobTracker.getMetadataJobEvents(
                             matchSeriesMetadata(
@@ -355,7 +390,12 @@ class MetadataService(
                                     is PostProcessingStartEvent -> sawPostProcessing = true
                                     is ProviderCompletedEvent -> sawProviderCompleted = true
                                     is ProviderErrorEvent -> sawProviderError = true
-                                    is ProcessingErrorEvent -> sawProcessingError = true
+                                    is ProcessingErrorEvent -> {
+                                        sawProcessingError = true
+                                        if (isFatalKavitaProcessingError(event.message)) {
+                                            sawFatalProcessingError = true
+                                        }
+                                    }
                                     else -> {}
                                 }
                             }
@@ -370,31 +410,68 @@ class MetadataService(
                         }
                         if (sawProviderError) providerErrors += 1
                         if (sawProcessingError) processingErrors += 1
+                        if (sawFatalProcessingError) {
+                            stoppedByFatal = true
+                            saveCheckpoint(libraryId, pageNumber, nextIndexForCheckpoint, effectiveDryRun, seriesEntry.id)
+                        }
                     }
                             .onFailure {
                             logger.error(it) { }
                             errorCount += 1
                             unexpectedErrors += 1
+                            if (it is KavitaSqliteCorruptionException || isFatalKavitaProcessingError(it.message)) {
+                                stoppedByFatal = true
+                                saveCheckpoint(libraryId, pageNumber, nextIndexForCheckpoint, effectiveDryRun, seriesEntry.id)
+                            }
                         }
-                        if (!effectiveDryRun) deferredScans.add(libraryId to seriesEntry.id)
+                        if (stoppedByFatal) break@pageLoop
+                        if (!effectiveDryRun && !safeFullLibraryEnabled) deferredScans.add(libraryId to seriesEntry.id)
                         nextIndexForCheckpoint++
+                        saveCheckpoint(
+                            libraryId = libraryId,
+                            pageNumber = pageNumber,
+                            startIndexInPage = nextIndexForCheckpoint,
+                            dryRun = effectiveDryRun,
+                            lastCompletedSeriesId = seriesEntry.id
+                        )
                     }
                     if (abortedBySafetyTimeout) break@pageLoop
-                    if (stoppedByUser) break@pageLoop
+                    if (stoppedByUser || stoppedByFatal) break@pageLoop
                     pageStartIndex = 0
                     pageNumber++
                     hasMorePages = page.pageNumber != page.totalPages
                 } while (hasMorePages)
             
             // Execute all deferred scans after library processing is complete
-            if (!effectiveDryRun && !stoppedByUser && !abortedBySafetyTimeout && mediaServerClient is snd.komf.mediaserver.kavita.KavitaMediaServerClientAdapter) {
-                mediaServerClient.executeDeferredScans(deferredScans)
+            if (!effectiveDryRun && !stoppedByUser && !stoppedByFatal && !abortedBySafetyTimeout && mediaServerClient is snd.komf.mediaserver.kavita.KavitaMediaServerClientAdapter) {
+                if (safeFullLibraryEnabled) {
+                    if (safeFullLibraryScanPolicy == KavitaSafeFullLibraryScanPolicy.LIBRARY_END) {
+                        mediaServerClient.executeLibraryEndScan(libraryId)
+                    } else {
+                        logger.info {
+                            "Safe full-library mode enabled for ${libraryId.value}; skipping deferred/final Kavita scans."
+                        }
+                    }
+                } else {
+                    mediaServerClient.executeDeferredScans(deferredScans)
+                }
             }
             
             if (effectiveDryRun) {
                 logger.info { "Finished dry-run library match for $libraryId. Encountered $errorCount errors. No metadata was written and no scans were triggered." }
             } else {
-                logger.info { "Finished library scan. Encountered $errorCount errors" }
+                val scanNote = if (safeFullLibraryEnabled) {
+                    when (safeFullLibraryScanPolicy) {
+                        KavitaSafeFullLibraryScanPolicy.NONE -> "safe mode scanPolicy=NONE (no scan triggered)"
+                        KavitaSafeFullLibraryScanPolicy.LIBRARY_END -> "safe mode scanPolicy=LIBRARY_END (single library-end scan)"
+                    }
+                } else {
+                    "legacy deferred scan flow"
+                }
+                logger.info { "Finished library scan. Encountered $errorCount errors. $scanNote" }
+            }
+            runMetrics?.snapshot()?.let { metricsSnapshot ->
+                logRunMetricsSummary(metricsSnapshot)
             }
             if (abortedBySafetyTimeout) {
                 logger.warn {
@@ -409,8 +486,13 @@ class MetadataService(
                     "Library match for ${libraryId.value} stopped by user request (graceful stop after current series, $checkpointLog)."
                 }
             }
-            if (!stoppedByUser && !abortedBySafetyTimeout) {
-                libraryRunCheckpoints.remove(libraryId.value)
+            if (stoppedByFatal) {
+                logger.error {
+                    "Library match for ${libraryId.value} stopped due to fatal SQLite/corruption-like Kavita error. Checkpoint preserved."
+                }
+            }
+            if (!stoppedByUser && !stoppedByFatal && !abortedBySafetyTimeout) {
+                clearCheckpoint(libraryId)
             }
 
             val skippedSeriesIds = getSkippedSeries(libraryId).map { it.oldSeriesId }
@@ -431,6 +513,7 @@ class MetadataService(
             )
                 rememberLibraryRunSummary(summary)
             } finally {
+                (mediaServerClient as? KavitaMediaServerClientAdapter)?.setActiveRunMetrics(null)
                 activeLibraryRuns.remove(libraryId.value)
             }
         }
@@ -494,6 +577,22 @@ class MetadataService(
                     )
                 } else metadata
             }
+            val desiredHash = metadataUpdateService.desiredHash(series.id, metadata)
+
+            if (!dryRun) {
+                val previous = seriesRunResultRepository?.get(series.libraryId, series.id)
+                if (previous != null &&
+                    previous.desiredHash == desiredHash &&
+                    (previous.status == LibrarySeriesRunStatus.APPLIED || previous.status == LibrarySeriesRunStatus.SKIPPED)
+                ) {
+                    activeKavitaRunMetrics()?.incrementSeriesResumedSkipped()
+                    activeKavitaRunMetrics()?.incrementSeriesSkippedUnchanged()
+                    logger.info {
+                        "Skipping series \"${seriesTitle}\" ${series.id} during resume; unchanged desired hash already ${previous.status}"
+                    }
+                    return@launchJob
+                }
+            }
 
             if (dryRun) {
                 logger.info {
@@ -505,7 +604,28 @@ class MetadataService(
             }
 
             eventFlow.emit(PostProcessingStartEvent)
-            metadataUpdateService.updateMetadata(series, metadata, deferScan = deferScans)
+            try {
+                val applyOutcome = metadataUpdateService.updateMetadata(series, metadata, deferScan = deferScans)
+                seriesRunResultRepository?.save(
+                    libraryId = series.libraryId,
+                    seriesId = series.id,
+                    desiredHash = applyOutcome.desiredHash,
+                    status = if (applyOutcome.written > 0) LibrarySeriesRunStatus.APPLIED else LibrarySeriesRunStatus.SKIPPED
+                )
+                if (applyOutcome.written > 0) {
+                    activeKavitaRunMetrics()?.incrementSeriesApplied()
+                } else {
+                    activeKavitaRunMetrics()?.incrementSeriesSkippedUnchanged()
+                }
+            } catch (fatal: KavitaSqliteCorruptionException) {
+                seriesRunResultRepository?.save(
+                    libraryId = series.libraryId,
+                    seriesId = series.id,
+                    desiredHash = desiredHash,
+                    status = LibrarySeriesRunStatus.FATAL
+                )
+                throw fatal
+            }
             logger.info { "finished metadata update of series \"${seriesTitle}\" ${series.id}" }
         }
 
@@ -541,7 +661,7 @@ class MetadataService(
             run.pauseRequested.set(false)
             if (mode == LibraryRunResumeMode.NEW) {
                 run.stopRequested.set(true)
-                libraryRunCheckpoints.remove(libraryId.value)
+                clearCheckpoint(libraryId)
                 matchLibraryMetadata(libraryId, dryRun = false)
             }
             return true
@@ -549,13 +669,14 @@ class MetadataService(
 
         return when (mode) {
             LibraryRunResumeMode.CONTINUE -> {
-                if (libraryRunCheckpoints.containsKey(libraryId.value)) {
-                    matchLibraryMetadata(libraryId, dryRun = libraryRunCheckpoints[libraryId.value]?.dryRun ?: false)
+                val checkpoint = getCheckpoint(libraryId)
+                if (checkpoint != null) {
+                    matchLibraryMetadata(libraryId, dryRun = checkpoint.dryRun)
                     true
                 } else false
             }
             LibraryRunResumeMode.NEW -> {
-                libraryRunCheckpoints.remove(libraryId.value)
+                clearCheckpoint(libraryId)
                 matchLibraryMetadata(libraryId, dryRun = false)
                 true
             }
@@ -564,7 +685,7 @@ class MetadataService(
 
     fun libraryRunControlStatus(libraryId: MediaServerLibraryId): LibraryRunControlStatus {
         val run = activeLibraryRuns[libraryId.value]
-        val checkpoint = libraryRunCheckpoints[libraryId.value]
+        val checkpoint = getCheckpoint(libraryId)
         return LibraryRunControlStatus(
             active = run != null,
             paused = run?.pauseRequested?.get() == true,
@@ -648,7 +769,12 @@ class MetadataService(
             )
         }
 
-        if (!dryRun && retryJobIds.isNotEmpty() && mediaServerClient is snd.komf.mediaserver.kavita.KavitaMediaServerClientAdapter) {
+        if (
+            !dryRun &&
+            retryJobIds.isNotEmpty() &&
+            !safeFullLibraryEnabled &&
+            mediaServerClient is snd.komf.mediaserver.kavita.KavitaMediaServerClientAdapter
+        ) {
             coroutineScope.launch {
                 mediaServerClient.executeDeferredScans(resolvedSeries.values.map { libraryId to it.id })
             }
@@ -981,14 +1107,42 @@ class MetadataService(
         libraryId: MediaServerLibraryId,
         pageNumber: Int,
         startIndexInPage: Int,
-        dryRun: Boolean
+        dryRun: Boolean,
+        lastCompletedSeriesId: MediaServerSeriesId?
     ) {
-        libraryRunCheckpoints[libraryId.value] = LibraryRunCheckpoint(
+        val checkpoint = LibraryRunCheckpoint(
             pageNumber = pageNumber.coerceAtLeast(1),
             startIndexInPage = startIndexInPage.coerceAtLeast(0),
             dryRun = dryRun,
+            lastCompletedSeriesId = lastCompletedSeriesId,
             updatedAtEpochMs = System.currentTimeMillis()
         )
+        libraryRunCheckpoints[libraryId.value] = checkpoint
+        runCheckpointRepository?.save(libraryId, checkpoint)
+    }
+
+    private fun getCheckpoint(libraryId: MediaServerLibraryId): LibraryRunCheckpoint? {
+        val inMemory = libraryRunCheckpoints[libraryId.value]
+        if (inMemory != null) return inMemory
+        val persisted = runCheckpointRepository?.get(libraryId)
+        if (persisted != null) {
+            libraryRunCheckpoints[libraryId.value] = persisted
+        }
+        return persisted
+    }
+
+    private fun clearCheckpoint(libraryId: MediaServerLibraryId) {
+        libraryRunCheckpoints.remove(libraryId.value)
+        runCheckpointRepository?.delete(libraryId)
+    }
+
+    private fun isFatalKavitaProcessingError(message: String?): Boolean {
+        val normalized = message?.lowercase().orEmpty()
+        return normalized.contains("kavitasqlitecorruptionexception") ||
+            normalized.contains("database disk image is malformed") ||
+            normalized.contains("sqlite error 11") ||
+            normalized.contains("sqlite_corrupt") ||
+            normalized.contains("malformed")
     }
 
     private suspend fun waitForRunWindow(
@@ -1017,9 +1171,45 @@ class MetadataService(
         operation: String,
         libraryId: MediaServerLibraryId
     ): Boolean {
-        val client = mediaServerClient as? snd.komf.mediaserver.kavita.KavitaMediaServerClientAdapter
+        val client = mediaServerClient as? KavitaMediaServerClientAdapter
             ?: return true
         return client.waitForSafeScanWindow(operation, libraryId)
+    }
+
+    private fun activeKavitaRunMetrics(): KavitaRunMetrics? {
+        return (mediaServerClient as? KavitaMediaServerClientAdapter)?.getActiveRunMetrics()
+    }
+
+    private fun logRunMetricsSummary(metrics: KavitaRunMetricsSnapshot) {
+        val cacheLookups = metrics.kavitaReadsCacheHits + metrics.kavitaReadsCacheMisses
+        val cacheHitRatio = if (cacheLookups == 0) 0.0 else metrics.kavitaReadsCacheHits.toDouble() / cacheLookups.toDouble()
+        val scanIssued = metrics.scansIssued > 0
+
+        logger.info {
+            "Kavita run metrics for library=${metrics.libraryId}: " +
+                "kavita_reads_total=${metrics.kavitaReadsTotal}, " +
+                "kavita_reads_cache_hits=${metrics.kavitaReadsCacheHits}, " +
+                "kavita_reads_cache_misses=${metrics.kavitaReadsCacheMisses}, " +
+                "reads_avoided=${metrics.kavitaReadsCacheHits}, " +
+                "cache_hit_ratio=${"%.3f".format(cacheHitRatio)}, " +
+                "kavita_writes_total=${metrics.kavitaWritesTotal}, " +
+                "writes_attempted=${metrics.kavitaWritesTotal}, " +
+                "writes_skipped=${metrics.seriesSkippedUnchanged}, " +
+                "series_skipped_unchanged=${metrics.seriesSkippedUnchanged}, " +
+                "series_applied=${metrics.seriesApplied}, " +
+                "series_resumed_skipped=${metrics.seriesResumedSkipped}, " +
+                "checkpoint_resumed=${metrics.resumedFromCheckpoint}, " +
+                "scan_issued=${scanIssued} (count=${metrics.scansIssued})"
+        }
+        logger.info { "Kavita endpoint reads: ${formatEndpointCounts(metrics.readsByEndpoint)}" }
+        logger.info { "Kavita endpoint writes: ${formatEndpointCounts(metrics.writesByEndpoint)}" }
+        logger.info { "Kavita cache hits by endpoint: ${formatEndpointCounts(metrics.cacheHitsByEndpoint)}" }
+        logger.info { "Kavita cache misses by endpoint: ${formatEndpointCounts(metrics.cacheMissesByEndpoint)}" }
+    }
+
+    private fun formatEndpointCounts(values: Map<String, Int>): String {
+        if (values.isEmpty()) return "none"
+        return values.entries.joinToString(", ") { (endpoint, count) -> "$endpoint=$count" }
     }
 
     companion object {

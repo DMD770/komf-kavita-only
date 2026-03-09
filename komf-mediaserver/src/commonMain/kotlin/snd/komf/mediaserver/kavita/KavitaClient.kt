@@ -42,7 +42,12 @@ class KavitaClient(
     private val apiKey: String,
     updateEventsPerMinute: Int = 120,
     scanEventsPerMinute: Int = 30,
+    private val failFastOnSqliteErrors: Boolean = true,
+    private val writeQueue: KavitaWriteQueue = KavitaWriteQueue(),
 ) {
+    @Volatile
+    private var activeRunMetrics: KavitaRunMetrics? = null
+
     private val updatesRateLimiter = rateLimiter(
         eventsPerInterval = updateEventsPerMinute.coerceAtLeast(1),
         interval = 60.seconds
@@ -53,6 +58,7 @@ class KavitaClient(
     )
 
     suspend fun getSeries(seriesId: KavitaSeriesId): KavitaSeries {
+        activeRunMetrics?.recordRead(KavitaEndpoint.SERIES)
         val response = ktor.get("api/series/${seriesId.value}")
         if (response.status == HttpStatusCode.NoContent || response.status == HttpStatusCode.NotFound) {
             throw KavitaResourceNotFoundException()
@@ -61,6 +67,7 @@ class KavitaClient(
     }
 
     suspend fun getSeries(libraryId: KavitaLibraryId, page: Int): KavitaPage<KavitaSeries> {
+        activeRunMetrics?.recordRead(KavitaEndpoint.SERIES)
         val response = ktor.post("api/series/v2") {
             parameter("pageNumber", page)
             parameter("pageSize", "500")
@@ -92,6 +99,7 @@ class KavitaClient(
     }
 
     suspend fun getSeriesCover(seriesId: KavitaSeriesId): Image {
+        activeRunMetrics?.recordRead(KavitaEndpoint.SERIES_COVER)
         val response: HttpResponse = ktor.get("api/image/series-cover") {
             parameter("seriesId", seriesId.value)
             parameter("apiKey", apiKey)
@@ -101,37 +109,47 @@ class KavitaClient(
     }
 
     suspend fun updateSeries(seriesUpdate: KavitaSeriesUpdateRequest) {
-        updatesRateLimiter.acquire()
-        withTransientRetry("api/series/update") {
-            ktor.post("api/series/update") {
-                contentType(ContentType.Application.Json)
-                setBody(seriesUpdate)
+        activeRunMetrics?.recordWrite(KavitaEndpoint.SERIES_UPDATE)
+        writeQueue.execute {
+            updatesRateLimiter.acquire()
+            withTransientRetry("api/series/update") {
+                ktor.post("api/series/update") {
+                    contentType(ContentType.Application.Json)
+                    setBody(seriesUpdate)
+                }
             }
         }
     }
 
     suspend fun updateSeriesMetadata(metadata: KavitaSeriesMetadataUpdateRequest) {
-        updatesRateLimiter.acquire()
-        withTransientRetry("api/series/metadata") {
-            ktor.post("api/series/metadata") {
-                contentType(ContentType.Application.Json)
-                setBody(metadata)
+        activeRunMetrics?.recordWrite(KavitaEndpoint.SERIES_METADATA_POST)
+        writeQueue.execute {
+            updatesRateLimiter.acquire()
+            withTransientRetry("api/series/metadata") {
+                ktor.post("api/series/metadata") {
+                    contentType(ContentType.Application.Json)
+                    setBody(metadata)
+                }
             }
         }
     }
 
     suspend fun updateChapterMetadata(metadata: KavitaChapterMetadataUpdateRequest) {
-        updatesRateLimiter.acquire()
-        withTransientRetry("api/chapter/update") {
-            ktor.post("api/chapter/update") {
-                contentType(ContentType.Application.Json)
-                setBody(metadata)
+        activeRunMetrics?.recordWrite(KavitaEndpoint.CHAPTER_UPDATE)
+        writeQueue.execute {
+            updatesRateLimiter.acquire()
+            withTransientRetry("api/chapter/update") {
+                ktor.post("api/chapter/update") {
+                    contentType(ContentType.Application.Json)
+                    setBody(metadata)
+                }
             }
         }
     }
 
 
     suspend fun getSeriesMetadata(seriesId: KavitaSeriesId): KavitaSeriesMetadata {
+        activeRunMetrics?.recordRead(KavitaEndpoint.SERIES_METADATA)
         val response = ktor.get("api/series/metadata") {
             parameter("seriesId", seriesId.value)
         }
@@ -145,18 +163,21 @@ class KavitaClient(
     }
 
     suspend fun getSeriesDetails(seriesId: KavitaSeriesId): KavitaSeriesDetails {
+        activeRunMetrics?.recordRead(KavitaEndpoint.SERIES_DETAIL)
         return ktor.get("api/series/series-detail") {
             parameter("seriesId", seriesId.value)
         }.body()
     }
 
     suspend fun getVolumes(seriesId: KavitaSeriesId): Collection<KavitaVolume> {
+        activeRunMetrics?.recordRead(KavitaEndpoint.VOLUMES)
         return ktor.get("api/series/volumes") {
             parameter("seriesId", seriesId.value)
         }.body()
     }
 
     suspend fun getVolume(volumeId: KavitaVolumeId): KavitaVolume {
+        activeRunMetrics?.recordRead(KavitaEndpoint.VOLUME)
         val response = ktor.get("api/series/volume") {
             parameter("volumeId", volumeId.value)
         }
@@ -166,6 +187,7 @@ class KavitaClient(
     }
 
     suspend fun getChapter(chapterId: KavitaChapterId): KavitaChapter {
+        activeRunMetrics?.recordRead(KavitaEndpoint.CHAPTER)
         val response = ktor.get("api/series/chapter") {
             parameter("chapterId", chapterId.value)
         }
@@ -174,6 +196,7 @@ class KavitaClient(
     }
 
     suspend fun getChapterCover(chapterId: KavitaChapterId): Image {
+        activeRunMetrics?.recordRead(KavitaEndpoint.CHAPTER_COVER)
         val response = ktor.get("api/image/chapter-cover") {
             parameter("chapterId", chapterId.value)
             parameter("apiKey", apiKey)
@@ -184,81 +207,98 @@ class KavitaClient(
     }
 
     suspend fun uploadSeriesCover(seriesId: KavitaSeriesId, cover: Image, lockCover: Boolean) {
-        updatesRateLimiter.acquire()
-        val base64Image = Base64.getEncoder().encodeToString(cover.bytes)
-        withTransientRetry("api/upload/series") {
-            ktor.post("api/upload/series") {
-                contentType(ContentType.Application.Json)
-                setBody(KavitaCoverUploadRequest(id = seriesId.value, url = base64Image, lockCover))
+        activeRunMetrics?.recordWrite(KavitaEndpoint.UPLOAD_SERIES)
+        writeQueue.execute {
+            updatesRateLimiter.acquire()
+            val base64Image = Base64.getEncoder().encodeToString(cover.bytes)
+            withTransientRetry("api/upload/series") {
+                ktor.post("api/upload/series") {
+                    contentType(ContentType.Application.Json)
+                    setBody(KavitaCoverUploadRequest(id = seriesId.value, url = base64Image, lockCover))
+                }
             }
         }
     }
 
     suspend fun uploadVolumeCover(volumeId: KavitaVolumeId, cover: Image, lockCover: Boolean) {
-        updatesRateLimiter.acquire()
-        val base64Image = Base64.getEncoder().encodeToString(cover.bytes)
-        logger.info { "POST /api/upload/volume volumeId=${volumeId.value}" }
-        withTransientRetry("api/upload/volume") {
-            ktor.post("api/upload/volume") {
-                contentType(ContentType.Application.Json)
-                setBody(KavitaCoverUploadRequest(id = volumeId.value, url = base64Image, lockCover))
+        activeRunMetrics?.recordWrite(KavitaEndpoint.UPLOAD_VOLUME)
+        writeQueue.execute {
+            updatesRateLimiter.acquire()
+            val base64Image = Base64.getEncoder().encodeToString(cover.bytes)
+            logger.info { "POST /api/upload/volume volumeId=${volumeId.value}" }
+            withTransientRetry("api/upload/volume") {
+                ktor.post("api/upload/volume") {
+                    contentType(ContentType.Application.Json)
+                    setBody(KavitaCoverUploadRequest(id = volumeId.value, url = base64Image, lockCover))
+                }
             }
         }
     }
 
     suspend fun getLibraries(): Collection<KavitaLibrary> {
+        activeRunMetrics?.recordRead(KavitaEndpoint.LIBRARIES)
         return ktor.get("api/library/libraries").body()
     }
 
     suspend fun scanSeries(libraryId: KavitaLibraryId, seriesId: KavitaSeriesId) {
-        scanRateLimiter.acquire()
-        withTransientRetry("api/series/scan") {
-            ktor.post("api/series/scan") {
-                contentType(ContentType.Application.Json)
-                setBody(
-                    buildJsonObject {
-                        put("libraryId", libraryId.value)
-                        put("seriesId", seriesId.value)
-                    }
-                )
-
+        activeRunMetrics?.recordWrite(KavitaEndpoint.SCAN_SERIES)
+        activeRunMetrics?.markScanIssued()
+        writeQueue.execute {
+            scanRateLimiter.acquire()
+            withTransientRetry("api/series/scan") {
+                ktor.post("api/series/scan") {
+                    contentType(ContentType.Application.Json)
+                    setBody(
+                        buildJsonObject {
+                            put("libraryId", libraryId.value)
+                            put("seriesId", seriesId.value)
+                        }
+                    )
+                }
             }
         }
     }
 
     suspend fun scanLibrary(libraryId: KavitaLibraryId) {
-        scanRateLimiter.acquire()
-        withTransientRetry("api/library/scan") {
-            ktor.post("api/library/scan") {
-                parameter("libraryId", libraryId.value)
+        activeRunMetrics?.recordWrite(KavitaEndpoint.SCAN_LIBRARY)
+        activeRunMetrics?.markScanIssued()
+        writeQueue.execute {
+            scanRateLimiter.acquire()
+            withTransientRetry("api/library/scan") {
+                ktor.post("api/library/scan") {
+                    parameter("libraryId", libraryId.value)
+                }
             }
         }
     }
 
     suspend fun resetChapterLock(chapterId: KavitaChapterId) {
-        withTransientRetry("api/upload/chapter|api/upload/reset-chapter-lock") {
-            try {
-                ktor.post("api/upload/chapter") {
-                    contentType(ContentType.Application.Json)
-                    setBody(KavitaCoverUploadRequest(id = chapterId.value, url = "", lockCover = false))
-                }
-            } catch (e: ResponseException) {
-                if (e.response.status == HttpStatusCode.NotFound || e.response.status == HttpStatusCode.MethodNotAllowed) {
-                    if (legacyResetChapterLockWarningLogged.compareAndSet(false, true)) {
-                        logger.warn {
-                            "Falling back to deprecated Kavita endpoint api/upload/reset-chapter-lock. " +
-                                "Upgrade Kavita to keep using api/upload/chapter."
-                        }
-                    }
-                    ktor.post("api/upload/reset-chapter-lock") {
+        activeRunMetrics?.recordWrite(KavitaEndpoint.RESET_CHAPTER_LOCK)
+        writeQueue.execute {
+            withTransientRetry("api/upload/chapter|api/upload/reset-chapter-lock") {
+                try {
+                    ktor.post("api/upload/chapter") {
                         contentType(ContentType.Application.Json)
-                        setBody(buildJsonObject {
-                            put("id", chapterId.value)
-                            put("url", "")
-                        })
+                        setBody(KavitaCoverUploadRequest(id = chapterId.value, url = "", lockCover = false))
                     }
-                } else {
-                    throw e
+                } catch (e: ResponseException) {
+                    if (e.response.status == HttpStatusCode.NotFound || e.response.status == HttpStatusCode.MethodNotAllowed) {
+                        if (legacyResetChapterLockWarningLogged.compareAndSet(false, true)) {
+                            logger.warn {
+                                "Falling back to deprecated Kavita endpoint api/upload/reset-chapter-lock. " +
+                                    "Upgrade Kavita to keep using api/upload/chapter."
+                            }
+                        }
+                        ktor.post("api/upload/reset-chapter-lock") {
+                            contentType(ContentType.Application.Json)
+                            setBody(buildJsonObject {
+                                put("id", chapterId.value)
+                                put("url", "")
+                            })
+                        }
+                    } else {
+                        throw e
+                    }
                 }
             }
         }
@@ -277,6 +317,9 @@ class KavitaClient(
             try {
                 return block()
             } catch (e: Throwable) {
+                if (failFastOnSqliteErrors) {
+                    detectSqliteCorruptionError(e)?.let { throw it }
+                }
                 val shouldRetry = isTransientError(e)
                 val isLastAttempt = attempt == maxAttempts - 1
                 if (!shouldRetry || isLastAttempt) {
@@ -305,6 +348,31 @@ class KavitaClient(
             is IOException -> true
             else -> false
         }
+    }
+
+    private suspend fun detectSqliteCorruptionError(error: Throwable): KavitaSqliteCorruptionException? {
+        val responseException = findResponseException(error) ?: return null
+        if (responseException.response.status.value !in 500..599) return null
+
+        val body = runCatching { responseException.response.bodyAsText() }.getOrNull().orEmpty()
+        val combined = "${responseException.message.orEmpty()} $body".lowercase()
+        if (SQLITE_CORRUPTION_MARKERS.any { marker -> combined.contains(marker) }) {
+            return KavitaSqliteCorruptionException(
+                "Kavita returned a fatal SQLite/corruption-like server error for " +
+                    "${responseException.response.request.url.encodedPath}: ${responseException.response.status} $body",
+                responseException
+            )
+        }
+        return null
+    }
+
+    private fun findResponseException(error: Throwable): ResponseException? {
+        var current: Throwable? = error
+        while (current != null) {
+            if (current is ResponseException) return current
+            current = current.cause
+        }
+        return null
     }
 
     private fun emptySeriesMetadata(seriesId: KavitaSeriesId): KavitaSeriesMetadata {
@@ -360,8 +428,20 @@ class KavitaClient(
     companion object {
         private val logger = KotlinLogging.logger {}
         private val legacyResetChapterLockWarningLogged = AtomicBoolean(false)
+        private val SQLITE_CORRUPTION_MARKERS = listOf(
+            "database disk image is malformed",
+            "sqlite error 11",
+            "sqlite_corrupt",
+            "malformed",
+        )
+    }
+
+    fun setActiveRunMetrics(metrics: KavitaRunMetrics?) {
+        activeRunMetrics = metrics
     }
 }
+
+class KavitaSqliteCorruptionException(message: String, cause: Throwable? = null) : RuntimeException(message, cause)
 
 data class KavitaPage<T>(
     val content: Collection<T>,

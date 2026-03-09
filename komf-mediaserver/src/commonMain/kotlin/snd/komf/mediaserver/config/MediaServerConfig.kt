@@ -26,6 +26,7 @@ data class KavitaConfig(
     val metadataUpdate: MetadataUpdateConfig = MetadataUpdateConfig(),
     val apiRateLimit: KavitaApiRateLimitConfig = KavitaApiRateLimitConfig(),
     val scan: KavitaScanConfig = KavitaScanConfig(),
+    val safeFullLibrary: KavitaSafeFullLibraryConfig = KavitaSafeFullLibraryConfig(),
 )
 
 @Serializable
@@ -41,6 +42,19 @@ data class KavitaScanConfig(
     val activeScanWaitTimeoutSeconds: Long = 1800,
     val activeScanPollIntervalSeconds: Long = 2,
 )
+
+@Serializable
+data class KavitaSafeFullLibraryConfig(
+    val enabled: Boolean = false,
+    val scanPolicy: KavitaSafeFullLibraryScanPolicy = KavitaSafeFullLibraryScanPolicy.NONE,
+    val failFastOnSqliteErrors: Boolean = true,
+)
+
+@Serializable
+enum class KavitaSafeFullLibraryScanPolicy {
+    NONE,
+    LIBRARY_END,
+}
 
 @Serializable
 data class EventListenerConfig(

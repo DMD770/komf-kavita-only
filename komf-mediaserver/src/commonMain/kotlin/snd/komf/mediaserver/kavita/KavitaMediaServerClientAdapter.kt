@@ -2,9 +2,12 @@ package snd.komf.mediaserver.kavita
 
 import io.github.oshai.kotlinlogging.KotlinLogging
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.datetime.LocalTime
 import kotlinx.datetime.atTime
 import snd.komf.mediaserver.MediaServerClient
+import snd.komf.mediaserver.SeriesPassSnapshotAware
 import snd.komf.mediaserver.kavita.model.KavitaAgeRating
 import snd.komf.mediaserver.kavita.model.KavitaAgeRating.UNKNOWN
 import snd.komf.mediaserver.kavita.model.KavitaAuthor
@@ -16,7 +19,9 @@ import snd.komf.mediaserver.kavita.model.KavitaSeries
 import snd.komf.mediaserver.kavita.model.KavitaSeriesId
 import snd.komf.mediaserver.kavita.model.KavitaSeriesMetadata
 import snd.komf.mediaserver.kavita.model.KavitaTag
+import snd.komf.mediaserver.kavita.model.KavitaChapterId
 import snd.komf.mediaserver.kavita.model.KavitaVolume
+import snd.komf.mediaserver.kavita.model.KavitaVolumeId
 import snd.komf.mediaserver.kavita.model.request.KavitaChapterMetadataUpdateRequest
 import snd.komf.mediaserver.kavita.model.request.KavitaSeriesMetadataUpdateRequest
 import snd.komf.mediaserver.kavita.model.request.KavitaSeriesUpdateRequest
@@ -55,14 +60,47 @@ class KavitaMediaServerClientAdapter(
     private val scanSafetyEnabled: Boolean = true,
     private val activeScanWaitTimeoutMs: Long = 1_800_000L,
     private val activeScanPollIntervalMs: Long = 2_000L,
-) : MediaServerClient {
+) : MediaServerClient, SeriesPassSnapshotAware {
+    @Volatile
+    private var activeRunMetrics: KavitaRunMetrics? = null
+
+    private val snapshotMutex = Mutex()
+    private var activeSnapshotSeriesId: KavitaSeriesId? = null
+    private val seriesCache = mutableMapOf<KavitaSeriesId, KavitaSeries>()
+    private val seriesMetadataCache = mutableMapOf<KavitaSeriesId, KavitaSeriesMetadata>()
+    private val seriesVolumesCache = mutableMapOf<KavitaSeriesId, Collection<KavitaVolume>>()
+    private val chapterCache = mutableMapOf<KavitaChapterId, KavitaChapter>()
+    private val volumeCache = mutableMapOf<KavitaVolumeId, KavitaVolume>()
+
+    override suspend fun beginSeriesPass(seriesId: MediaServerSeriesId) {
+        snapshotMutex.withLock {
+            clearSnapshot()
+            activeSnapshotSeriesId = seriesId.toKavitaSeriesId()
+        }
+    }
+
+    override suspend fun endSeriesPass(seriesId: MediaServerSeriesId) {
+        snapshotMutex.withLock {
+            if (activeSnapshotSeriesId == seriesId.toKavitaSeriesId()) {
+                clearSnapshot()
+                activeSnapshotSeriesId = null
+            }
+        }
+    }
+
+    private fun clearSnapshot() {
+        seriesCache.clear()
+        seriesMetadataCache.clear()
+        seriesVolumesCache.clear()
+        chapterCache.clear()
+        volumeCache.clear()
+    }
 
     override suspend fun getSeries(seriesId: MediaServerSeriesId): MediaServerSeries {
         val kavitaSeriesId = seriesId.toKavitaSeriesId()
-        val series = kavitaClient.getSeries(kavitaSeriesId)
-        val metadata = kavitaClient.getSeriesMetadata(kavitaSeriesId)
-        val details = kavitaClient.getSeriesDetails(kavitaSeriesId)
-        return series.toMediaServerSeries(metadata, details.totalCount)
+        val series = getOrFetchSeries(kavitaSeriesId)
+        val metadata = getOrFetchSeriesMetadata(kavitaSeriesId)
+        return series.toMediaServerSeries(metadata, metadata.totalCount)
     }
 
     override suspend fun getSeries(libraryId: MediaServerLibraryId, pageNumber: Int): Page<MediaServerSeries> {
@@ -70,9 +108,8 @@ class KavitaMediaServerClientAdapter(
         val kavitaPage = kavitaClient.getSeries(kavitaLibraryId, pageNumber)
         return Page(
             content = kavitaPage.content.map {
-                val metadata = kavitaClient.getSeriesMetadata(it.id)
-                val details = kavitaClient.getSeriesDetails(it.id)
-                it.toMediaServerSeries(metadata, details.totalCount)
+                val metadata = getOrFetchSeriesMetadata(it.id, prefetchedSeries = it)
+                it.toMediaServerSeries(metadata, metadata.totalCount)
             },
             pageNumber = kavitaPage.currentPage,
             totalElements = kavitaPage.totalItems,
@@ -90,14 +127,14 @@ class KavitaMediaServerClientAdapter(
 
     override suspend fun getBook(bookId: MediaServerBookId): MediaServerBook {
         val chapterId = bookId.toKavitaChapterId()
-        val chapter = kavitaClient.getChapter(chapterId)
-        val volume = kavitaClient.getVolume(chapter.volumeId)
+        val chapter = getOrFetchChapter(chapterId)
+        val volume = getOrFetchVolume(chapter.volumeId)
 
         return chapter.toMediaServerBook(volume)
     }
 
     override suspend fun getBooks(seriesId: MediaServerSeriesId): Collection<MediaServerBook> {
-        return kavitaClient.getVolumes(seriesId.toKavitaSeriesId())
+        return getOrFetchVolumes(seriesId.toKavitaSeriesId())
             .flatMap { volume ->
                 val resolution = volume.resolveVolumeNumber()
                 logger.info {
@@ -131,7 +168,7 @@ class KavitaMediaServerClientAdapter(
     ) {
         val localizedName = metadata.alternativeTitles?.find { it.language != null }
         if (metadata.titleSort != null || localizedName != null) {
-            val series = kavitaClient.getSeries(seriesId.toKavitaSeriesId())
+            val series = getOrFetchSeries(seriesId.toKavitaSeriesId())
             kavitaClient.updateSeries(
                 series.toKavitaTitleUpdate(
                     metadata.titleSort?.name,
@@ -140,8 +177,12 @@ class KavitaMediaServerClientAdapter(
             )
         }
 
-        val oldMetadata = kavitaClient.getSeriesMetadata(seriesId.toKavitaSeriesId())
+        val oldMetadata = getOrFetchSeriesMetadata(seriesId.toKavitaSeriesId())
         kavitaClient.updateSeriesMetadata(metadata.toKavitaSeriesMetadataUpdate(oldMetadata))
+        snapshotMutex.withLock {
+            seriesMetadataCache.remove(seriesId.toKavitaSeriesId())
+            seriesCache.remove(seriesId.toKavitaSeriesId())
+        }
     }
 
     override suspend fun deleteSeriesThumbnail(seriesId: MediaServerSeriesId, thumbnailId: MediaServerThumbnailId) {
@@ -150,9 +191,10 @@ class KavitaMediaServerClientAdapter(
     }
 
     override suspend fun updateBookMetadata(bookId: MediaServerBookId, metadata: MediaServerBookMetadataUpdate) {
-        val currentChapter = kavitaClient.getChapter(bookId.toKavitaChapterId())
+        val currentChapter = getOrFetchChapter(bookId.toKavitaChapterId())
         val request = metadata.toKavitaChapterMetadataUpdate(currentChapter)
         kavitaClient.updateChapterMetadata(request)
+        snapshotMutex.withLock { chapterCache.remove(bookId.toKavitaChapterId()) }
     }
 
     override suspend fun deleteBookThumbnail(bookId: MediaServerBookId, thumbnailId: MediaServerThumbnailId) {}
@@ -183,7 +225,7 @@ class KavitaMediaServerClientAdapter(
         selected: Boolean,
         lock: Boolean
     ): MediaServerBookThumbnail? {
-        val chapter = kavitaClient.getChapter(bookId.toKavitaChapterId())
+        val chapter = getOrFetchChapter(bookId.toKavitaChapterId())
         logger.info { "uploading volume cover volumeId=${chapter.volumeId.value} bookId=${bookId.value}" }
         kavitaClient.uploadVolumeCover(chapter.volumeId, thumbnail, lock)
         return null
@@ -208,6 +250,12 @@ class KavitaMediaServerClientAdapter(
             delay(deferredLibraryScanDelayMs.coerceAtLeast(0))
             kavitaClient.scanLibrary(kavitaLibraryId)
         }
+    }
+
+    suspend fun executeLibraryEndScan(libraryId: MediaServerLibraryId) {
+        val kavitaLibraryId = libraryId.toKavitaLibraryId()
+        delay(deferredLibraryScanDelayMs.coerceAtLeast(0))
+        kavitaClient.scanLibrary(kavitaLibraryId)
     }
 
     suspend fun waitForSafeScanWindow(
@@ -242,6 +290,117 @@ class KavitaMediaServerClientAdapter(
 
     companion object {
         private val logger = KotlinLogging.logger {}
+    }
+
+    fun setActiveRunMetrics(metrics: KavitaRunMetrics?) {
+        activeRunMetrics = metrics
+        kavitaClient.setActiveRunMetrics(metrics)
+    }
+
+    fun getActiveRunMetrics(): KavitaRunMetrics? = activeRunMetrics
+
+    private suspend fun getOrFetchSeries(seriesId: KavitaSeriesId): KavitaSeries {
+        snapshotMutex.withLock {
+            if (activeSnapshotSeriesId == seriesId) {
+                seriesCache[seriesId]?.let {
+                    activeRunMetrics?.recordCacheHit(KavitaEndpoint.SERIES)
+                    return it
+                }
+            }
+        }
+
+        activeRunMetrics?.recordCacheMiss(KavitaEndpoint.SERIES)
+        val fetched = kavitaClient.getSeries(seriesId)
+        snapshotMutex.withLock {
+            if (activeSnapshotSeriesId == seriesId) {
+                seriesCache[seriesId] = fetched
+            }
+        }
+        return fetched
+    }
+
+    private suspend fun getOrFetchSeriesMetadata(
+        seriesId: KavitaSeriesId,
+        prefetchedSeries: KavitaSeries? = null
+    ): KavitaSeriesMetadata {
+        snapshotMutex.withLock {
+            if (activeSnapshotSeriesId == seriesId) {
+                seriesMetadataCache[seriesId]?.let {
+                    activeRunMetrics?.recordCacheHit(KavitaEndpoint.SERIES_METADATA)
+                    return it
+                }
+            }
+        }
+
+        activeRunMetrics?.recordCacheMiss(KavitaEndpoint.SERIES_METADATA)
+        val fetched = kavitaClient.getSeriesMetadata(seriesId)
+        snapshotMutex.withLock {
+            if (activeSnapshotSeriesId == seriesId) {
+                seriesMetadataCache[seriesId] = fetched
+                prefetchedSeries?.let { seriesCache[seriesId] = it }
+            }
+        }
+        return fetched
+    }
+
+    private suspend fun getOrFetchVolumes(seriesId: KavitaSeriesId): Collection<KavitaVolume> {
+        snapshotMutex.withLock {
+            if (activeSnapshotSeriesId == seriesId) {
+                seriesVolumesCache[seriesId]?.let {
+                    activeRunMetrics?.recordCacheHit(KavitaEndpoint.VOLUMES)
+                    return it
+                }
+            }
+        }
+
+        activeRunMetrics?.recordCacheMiss(KavitaEndpoint.VOLUMES)
+        val fetched = kavitaClient.getVolumes(seriesId)
+        snapshotMutex.withLock {
+            if (activeSnapshotSeriesId == seriesId) {
+                seriesVolumesCache[seriesId] = fetched
+                fetched.forEach { volume ->
+                    volumeCache[volume.id] = volume
+                    volume.chapters.forEach { chapter -> chapterCache[chapter.id] = chapter }
+                }
+            }
+        }
+        return fetched
+    }
+
+    private suspend fun getOrFetchChapter(chapterId: KavitaChapterId): KavitaChapter {
+        snapshotMutex.withLock {
+            chapterCache[chapterId]?.let {
+                activeRunMetrics?.recordCacheHit(KavitaEndpoint.CHAPTER)
+                return it
+            }
+        }
+
+        activeRunMetrics?.recordCacheMiss(KavitaEndpoint.CHAPTER)
+        val fetched = kavitaClient.getChapter(chapterId)
+        snapshotMutex.withLock {
+            if (activeSnapshotSeriesId != null) {
+                chapterCache[chapterId] = fetched
+            }
+        }
+        return fetched
+    }
+
+    private suspend fun getOrFetchVolume(volumeId: KavitaVolumeId): KavitaVolume {
+        snapshotMutex.withLock {
+            volumeCache[volumeId]?.let {
+                activeRunMetrics?.recordCacheHit(KavitaEndpoint.VOLUME)
+                return it
+            }
+        }
+
+        activeRunMetrics?.recordCacheMiss(KavitaEndpoint.VOLUME)
+        val fetched = kavitaClient.getVolume(volumeId)
+        snapshotMutex.withLock {
+            if (activeSnapshotSeriesId != null) {
+                volumeCache[volumeId] = fetched
+            }
+        }
+        return fetched
     }
 }
 

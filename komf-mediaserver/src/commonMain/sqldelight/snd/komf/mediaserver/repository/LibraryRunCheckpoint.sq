@@ -1,0 +1,26 @@
+CREATE TABLE LibraryRunCheckpoint (
+    libraryId       TEXT NOT NULL PRIMARY KEY,
+    pageNumber      INTEGER NOT NULL,
+    startIndexInPage INTEGER NOT NULL,
+    dryRun          INTEGER NOT NULL,
+    lastSeriesId    TEXT,
+    updatedAtEpochMs INTEGER NOT NULL
+);
+CREATE INDEX library_run_checkpoint_updated_idx ON LibraryRunCheckpoint(updatedAtEpochMs);
+
+getForLibrary:
+SELECT * FROM LibraryRunCheckpoint WHERE libraryId = ?;
+
+upsert:
+INSERT OR REPLACE INTO LibraryRunCheckpoint(
+    libraryId,
+    pageNumber,
+    startIndexInPage,
+    dryRun,
+    lastSeriesId,
+    updatedAtEpochMs
+) VALUES (?, ?, ?, ?, ?, ?);
+
+deleteForLibrary:
+DELETE FROM LibraryRunCheckpoint WHERE libraryId = ?;
+

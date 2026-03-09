@@ -31,7 +31,21 @@ data class KavitaConfigDto(
     val baseUri: String,
     val eventListener: EventListenerConfigDto,
     val metadataUpdate: MetadataUpdateConfigDto,
+    val safeFullLibrary: KavitaSafeFullLibraryConfigDto,
 )
+
+@Serializable
+data class KavitaSafeFullLibraryConfigDto(
+    val enabled: Boolean,
+    val scanPolicy: KomfKavitaSafeFullLibraryScanPolicy,
+    val failFastOnSqliteErrors: Boolean,
+)
+
+@Serializable
+enum class KomfKavitaSafeFullLibraryScanPolicy {
+    NONE,
+    LIBRARY_END,
+}
 
 @Serializable
 data class MetadataUpdateConfigDto(

@@ -3,9 +3,14 @@ package snd.komf.mediaserver.metadata
 import io.github.oshai.kotlinlogging.KotlinLogging
 import snd.komf.comicinfo.ComicInfoWriter
 import snd.komf.mediaserver.MediaServerClient
+import snd.komf.mediaserver.SeriesPassSnapshotAware
 import snd.komf.mediaserver.model.MediaServerBook
 import snd.komf.mediaserver.model.MediaServerBookId
+import snd.komf.mediaserver.model.MediaServerBookMetadata
+import snd.komf.mediaserver.model.MediaServerBookMetadataUpdate
 import snd.komf.mediaserver.model.MediaServerLibraryId
+import snd.komf.mediaserver.model.MediaServerSeriesMetadata
+import snd.komf.mediaserver.model.MediaServerSeriesMetadataUpdate
 import snd.komf.mediaserver.model.MediaServerSeries
 import snd.komf.mediaserver.model.MediaServerSeriesId
 import snd.komf.mediaserver.model.MediaServerThumbnailId
@@ -18,9 +23,20 @@ import snd.komf.model.SeriesMetadata
 import snd.komf.model.UpdateMode
 import snd.komf.util.BookNameParser
 import snd.komf.util.caseInsensitiveNatSortComparator
+import snd.komf.model.SeriesTitle
+import snd.komf.model.WebLink
+import java.security.MessageDigest
 import kotlin.math.floor
 
 private val logger = KotlinLogging.logger {}
+
+data class MetadataApplyOutcome(
+    val desiredHash: String,
+    val planned: Int,
+    val changed: Int,
+    val skippedUnchanged: Int,
+    val written: Int,
+)
 
 class MetadataUpdater(
     private val mediaServerClient: MediaServerClient,
@@ -37,20 +53,76 @@ class MetadataUpdater(
     private val lockSeriesCover: Boolean,
     private val lockVolumeCover: Boolean,
 ) {
+    private data class WriteCounters(
+        var planned: Int = 0,
+        var changed: Int = 0,
+        var skippedUnchanged: Int = 0,
+        var written: Int = 0,
+    ) {
+        fun merge(other: WriteCounters) {
+            planned += other.planned
+            changed += other.changed
+            skippedUnchanged += other.skippedUnchanged
+            written += other.written
+        }
+    }
+
+    private data class BookUpdateOutcome(
+        val coverUploaded: Boolean,
+        val counters: WriteCounters
+    )
+
+    private data class CoverReplaceOutcome(
+        val thumbnailId: MediaServerThumbnailId?,
+        val uploaded: Boolean,
+        val counters: WriteCounters
+    )
+
     private val requireMetadataRefresh = setOf(UpdateMode.COMIC_INFO)
     private val natSortComparator: Comparator<String> = caseInsensitiveNatSortComparator()
 
-    suspend fun updateMetadata(series: MediaServerSeries, metadata: SeriesAndBookMetadata) {
-        updateMetadata(series, metadata, deferScan = false)
+    fun desiredHash(seriesId: MediaServerSeriesId, metadata: SeriesAndBookMetadata): String {
+        val processedMetadata = postProcessor.process(metadata)
+        return processedMetadata.toDesiredHash(seriesId)
     }
 
-    suspend fun updateMetadata(series: MediaServerSeries, metadata: SeriesAndBookMetadata, deferScan: Boolean) {
-        val processedMetadata = postProcessor.process(metadata)
-        updateSeriesMetadata(series, processedMetadata.seriesMetadata)
-        updateBookMetadata(series = series, unprocessedMetadata = metadata, processedMetadata = processedMetadata)
+    suspend fun updateMetadata(series: MediaServerSeries, metadata: SeriesAndBookMetadata): MetadataApplyOutcome {
+        return updateMetadata(series, metadata, deferScan = false)
+    }
 
-        if (updateModes.any { it in requireMetadataRefresh })
-            mediaServerClient.refreshMetadata(series.libraryId, series.id, deferScan = deferScan)
+    suspend fun updateMetadata(
+        series: MediaServerSeries,
+        metadata: SeriesAndBookMetadata,
+        deferScan: Boolean
+    ): MetadataApplyOutcome {
+        val snapshotAwareClient = mediaServerClient as? SeriesPassSnapshotAware
+        snapshotAwareClient?.beginSeriesPass(series.id)
+
+        try {
+            val processedMetadata = postProcessor.process(metadata)
+            val desiredHash = processedMetadata.toDesiredHash(series.id)
+            val counters = WriteCounters()
+            counters.merge(updateSeriesMetadata(series, processedMetadata.seriesMetadata))
+            counters.merge(updateBookMetadata(series = series, unprocessedMetadata = metadata, processedMetadata = processedMetadata))
+
+            logger.info {
+                "series ${series.id.value} write summary: planned=${counters.planned}, changed=${counters.changed}, " +
+                    "skipped_unchanged=${counters.skippedUnchanged}, written=${counters.written}"
+            }
+
+            if (updateModes.any { it in requireMetadataRefresh })
+                mediaServerClient.refreshMetadata(series.libraryId, series.id, deferScan = deferScan)
+
+            return MetadataApplyOutcome(
+                desiredHash = desiredHash,
+                planned = counters.planned,
+                changed = counters.changed,
+                skippedUnchanged = counters.skippedUnchanged,
+                written = counters.written
+            )
+        } finally {
+            snapshotAwareClient?.endSeriesPass(series.id)
+        }
     }
 
     suspend fun resetLibraryMetadata(libraryId: MediaServerLibraryId, removeComicInfo: Boolean) {
@@ -67,13 +139,21 @@ class MetadataUpdater(
         resetSeriesMetadata(series, removeComicInfo)
     }
 
-    private suspend fun updateSeriesMetadata(series: MediaServerSeries, metadata: SeriesMetadata) {
+    private suspend fun updateSeriesMetadata(series: MediaServerSeries, metadata: SeriesMetadata): WriteCounters {
+        val counters = WriteCounters()
         updateModes.forEach {
             when (it) {
                 UpdateMode.API -> {
                     logger.info { "updating series ${series.name}" }
                     val metadataUpdate = metadataUpdateMapper.toSeriesMetadataUpdate(metadata, series.metadata)
-                    mediaServerClient.updateSeriesMetadata(series.id, metadataUpdate)
+                    counters.planned += 1
+                    if (metadataUpdate.hasChangesComparedTo(series.metadata)) {
+                        counters.changed += 1
+                        mediaServerClient.updateSeriesMetadata(series.id, metadataUpdate)
+                        counters.written += 1
+                    } else {
+                        counters.skippedUnchanged += 1
+                    }
                 }
 
                 UpdateMode.COMIC_INFO -> {}
@@ -81,36 +161,42 @@ class MetadataUpdater(
         }
 
         val newThumbnail = if (uploadSeriesCovers) metadata.thumbnail else null
-        val thumbnailId = replaceSeriesThumbnail(series.id, newThumbnail)
+        val seriesCoverOutcome = replaceSeriesThumbnail(series.id, newThumbnail)
+        counters.merge(seriesCoverOutcome.counters)
 
-        if (thumbnailId == null) {
+        if (seriesCoverOutcome.thumbnailId == null) {
             seriesThumbnailsRepository.delete(series.id)
         } else {
             seriesThumbnailsRepository.save(
                 seriesId = series.id,
-                thumbnailId = thumbnailId,
+                thumbnailId = seriesCoverOutcome.thumbnailId,
             )
         }
+        return counters
     }
 
     private suspend fun updateBookMetadata(
         series: MediaServerSeries,
         unprocessedMetadata: SeriesAndBookMetadata,
         processedMetadata: SeriesAndBookMetadata
-    ) {
+    ): WriteCounters {
         val bookIdToWriteSeriesMetadata = bookToWriteSeriesMetadata(unprocessedMetadata.bookMetadata)
         val uploadedByBook = mutableMapOf<MediaServerBookId, Boolean>()
+        val counters = WriteCounters()
 
         processedMetadata.bookMetadata.forEach { (book, metadata) ->
-            uploadedByBook[book.id] = updateBookMetadata(
+            val outcome = updateBookMetadata(
                 book,
                 metadata,
                 processedMetadata.seriesMetadata,
                 book.id == bookIdToWriteSeriesMetadata
             )
+            uploadedByBook[book.id] = outcome.coverUploaded
+            counters.merge(outcome.counters)
         }
 
         logVolumeCoverSummary(series, processedMetadata, uploadedByBook)
+        return counters
     }
 
     private suspend fun updateBookMetadata(
@@ -118,12 +204,22 @@ class MetadataUpdater(
         metadata: BookMetadata?,
         seriesMeta: SeriesMetadata,
         writeSeriesMetadata: Boolean
-    ): Boolean {
+    ): BookUpdateOutcome {
+        val counters = WriteCounters()
         logger.info { "updating book ${book.name}" }
         updateModes.forEach { mode ->
             when (mode) {
-                UpdateMode.API -> metadataUpdateMapper.toBookMetadataUpdate(metadata, seriesMeta, book)
-                    .let { mediaServerClient.updateBookMetadata(book.id, it) }
+                UpdateMode.API -> {
+                    val patch = metadataUpdateMapper.toBookMetadataUpdate(metadata, seriesMeta, book)
+                    counters.planned += 1
+                    if (patch.hasChangesComparedTo(book.metadata)) {
+                        counters.changed += 1
+                        mediaServerClient.updateBookMetadata(book.id, patch)
+                        counters.written += 1
+                    } else {
+                        counters.skippedUnchanged += 1
+                    }
+                }
 
 
                 UpdateMode.COMIC_INFO -> {
@@ -146,18 +242,19 @@ class MetadataUpdater(
         }
 
         val newThumbnail = if (uploadBookCovers) metadata?.thumbnail else null
-        val thumbnailId = replaceBookThumbnail(book.id, newThumbnail)
+        val bookCoverOutcome = replaceBookThumbnail(book.id, newThumbnail)
+        counters.merge(bookCoverOutcome.counters)
 
-        if (thumbnailId == null) {
+        if (bookCoverOutcome.thumbnailId == null) {
             bookThumbnailsRepository.delete(book.id)
         } else {
             bookThumbnailsRepository.save(
                 seriesId = book.seriesId,
                 bookId = book.id,
-                thumbnailId = thumbnailId,
+                thumbnailId = bookCoverOutcome.thumbnailId,
             )
         }
-        return newThumbnail != null
+        return BookUpdateOutcome(coverUploaded = bookCoverOutcome.uploaded, counters = counters)
     }
 
     private fun logVolumeCoverSummary(
@@ -182,21 +279,42 @@ class MetadataUpdater(
         }
     }
 
-    private suspend fun replaceBookThumbnail(bookId: MediaServerBookId, thumbnail: Image?): MediaServerThumbnailId? {
+    private suspend fun replaceBookThumbnail(bookId: MediaServerBookId, thumbnail: Image?): CoverReplaceOutcome {
+        val counters = WriteCounters()
+
+        if (thumbnail == null) {
+            return CoverReplaceOutcome(
+                thumbnailId = null,
+                uploaded = false,
+                counters = counters
+            )
+        }
+
+        counters.planned += 1
+        val currentThumbnail = mediaServerClient.getBookThumbnail(bookId)
+        if (currentThumbnail != null && thumbnail.bytes.contentHashCode() == currentThumbnail.bytes.contentHashCode()) {
+            counters.skippedUnchanged += 1
+            return CoverReplaceOutcome(
+                thumbnailId = bookThumbnailsRepository.findFor(bookId)?.thumbnailId,
+                uploaded = false,
+                counters = counters
+            )
+        }
+
+        counters.changed += 1
         val existingMatch = bookThumbnailsRepository.findFor(bookId)
         val thumbnails = mediaServerClient.getBookThumbnails(bookId)
 
         val selectThumbnail = overrideExistingCovers ||
                 thumbnails.all { it.type == "GENERATED" || it.id == existingMatch?.thumbnailId }
 
-        val uploadedThumbnail = thumbnail?.let {
-            mediaServerClient.uploadBookThumbnail(
-                bookId = bookId,
-                thumbnail = thumbnail,
-                selected = selectThumbnail,
-                lock = lockVolumeCover
-            )
-        }
+        val uploadedThumbnail = mediaServerClient.uploadBookThumbnail(
+            bookId = bookId,
+            thumbnail = thumbnail,
+            selected = selectThumbnail,
+            lock = lockVolumeCover
+        )
+        counters.written += 1
 
         existingMatch?.thumbnailId?.let { thumb ->
             if (thumbnails.any { it.id == thumb }) {
@@ -204,26 +322,51 @@ class MetadataUpdater(
             }
         }
 
-        return uploadedThumbnail?.id
+        return CoverReplaceOutcome(
+            thumbnailId = uploadedThumbnail?.id,
+            uploaded = true,
+            counters = counters
+        )
     }
 
     private suspend fun replaceSeriesThumbnail(
         seriesId: MediaServerSeriesId,
         thumbnail: Image?
-    ): MediaServerThumbnailId? {
+    ): CoverReplaceOutcome {
+        val counters = WriteCounters()
+
+        if (thumbnail == null) {
+            return CoverReplaceOutcome(
+                thumbnailId = null,
+                uploaded = false,
+                counters = counters
+            )
+        }
+
+        counters.planned += 1
+        val currentThumbnail = mediaServerClient.getSeriesThumbnail(seriesId)
+        if (currentThumbnail != null && thumbnail.bytes.contentHashCode() == currentThumbnail.bytes.contentHashCode()) {
+            counters.skippedUnchanged += 1
+            return CoverReplaceOutcome(
+                thumbnailId = seriesThumbnailsRepository.findFor(seriesId)?.thumbnailId,
+                uploaded = false,
+                counters = counters
+            )
+        }
+
+        counters.changed += 1
         val matchedSeries = seriesThumbnailsRepository.findFor(seriesId)
         val thumbnails = mediaServerClient.getSeriesThumbnails(seriesId)
 
         val selectThumbnail = overrideExistingCovers || thumbnails.isEmpty()
 
-        val uploadedThumbnail = thumbnail?.let {
-            mediaServerClient.uploadSeriesThumbnail(
-                seriesId = seriesId,
-                thumbnail = thumbnail,
-                selected = selectThumbnail,
-                lock = lockSeriesCover,
-            )
-        }
+        val uploadedThumbnail = mediaServerClient.uploadSeriesThumbnail(
+            seriesId = seriesId,
+            thumbnail = thumbnail,
+            selected = selectThumbnail,
+            lock = lockSeriesCover,
+        )
+        counters.written += 1
 
         matchedSeries?.thumbnailId?.let { thumb ->
             if (thumbnails.any { it.id == thumb }) {
@@ -231,7 +374,11 @@ class MetadataUpdater(
             }
         }
 
-        return uploadedThumbnail?.id
+        return CoverReplaceOutcome(
+            thumbnailId = uploadedThumbnail?.id,
+            uploaded = true,
+            counters = counters
+        )
     }
 
     private suspend fun resetSeriesMetadata(series: MediaServerSeries, removeComicInfo: Boolean) {
@@ -270,4 +417,151 @@ class MetadataUpdater(
             ?: if (bookMetadata.any { it.value != null }) null
             else books.firstOrNull()?.id
     }
+}
+
+private fun MediaServerSeriesMetadataUpdate.hasChangesComparedTo(current: MediaServerSeriesMetadata): Boolean {
+    val currentAltTitles = current.alternativeTitles
+        .map { it.title.trim().lowercase() }
+        .toSet()
+    val currentAuthors = current.authors
+        .map { it.name.trim().lowercase() to it.role.trim().lowercase() }
+        .toSet()
+    val currentLinks = current.links.map { it.url.trim().lowercase() }.toSet()
+
+    fun linksChanged(update: Collection<WebLink>) = update.map { it.url.trim().lowercase() }.toSet() != currentLinks
+    fun titlesChanged(update: Collection<SeriesTitle>) =
+        update.map { it.name.trim().lowercase() }.toSet() != currentAltTitles
+
+    return (status != null && status != current.status) ||
+        (title != null && title.name != current.title) ||
+        (titleSort != null && titleSort.name != current.titleSort) ||
+        (alternativeTitles != null && titlesChanged(alternativeTitles)) ||
+        (summary != null && summary != current.summary) ||
+        (publisher != null && publisher != current.publisher) ||
+        (alternativePublishers != null && alternativePublishers.toSet() != current.alternativePublishers) ||
+        (ageRating != null && ageRating != current.ageRating) ||
+        (language != null && language != current.language) ||
+        (genres != null && genres.toSet() != current.genres.toSet()) ||
+        (tags != null && tags.toSet() != current.tags.toSet()) ||
+        (totalBookCount != null && totalBookCount != current.totalBookCount) ||
+        (authors != null && authors.map { it.name.trim().lowercase() to it.role.trim().lowercase() }.toSet() != currentAuthors) ||
+        (releaseYear != null && releaseYear != current.releaseYear) ||
+        (links != null && linksChanged(links)) ||
+        (statusLock != null && statusLock != current.statusLock) ||
+        (titleLock != null && titleLock != current.titleLock) ||
+        (titleSortLock != null && titleSortLock != current.titleSortLock) ||
+        (alternativeTitlesLock != null && alternativeTitlesLock != current.alternativeTitlesLock) ||
+        (summaryLock != null && summaryLock != current.summaryLock) ||
+        (readingDirectionLock != null && readingDirectionLock != current.readingDirectionLock) ||
+        (publisherLock != null && publisherLock != current.publisherLock) ||
+        (ageRatingLock != null && ageRatingLock != current.ageRatingLock) ||
+        (languageLock != null && languageLock != current.languageLock) ||
+        (genresLock != null && genresLock != current.genresLock) ||
+        (tagsLock != null && tagsLock != current.tagsLock) ||
+        (totalBookCountLock != null && totalBookCountLock != current.totalBookCountLock) ||
+        (authorsLock != null && authorsLock != current.authorsLock) ||
+        (releaseYearLock != null && releaseYearLock != current.releaseYearLock) ||
+        (linksLock != null && linksLock != current.linksLock)
+}
+
+private fun MediaServerBookMetadataUpdate.hasChangesComparedTo(current: MediaServerBookMetadata): Boolean {
+    val currentAuthors = current.authors
+        .map { it.name.trim().lowercase() to it.role.trim().lowercase() }
+        .toSet()
+    val currentTags = current.tags.map { it.trim().lowercase() }.toSet()
+    val currentLinks = current.links.map { it.url.trim().lowercase() }.toSet()
+
+    fun numberSortAsDouble(value: String?) = value?.toDoubleOrNull()
+
+    return (title != null && title != current.title) ||
+        (summary != null && summary != current.summary) ||
+        (number != null && number != current.number) ||
+        (numberSort != null && numberSort != numberSortAsDouble(current.numberSort)) ||
+        (releaseDate != null && releaseDate != current.releaseDate) ||
+        (authors != null && authors.map { it.name.trim().lowercase() to it.role.trim().lowercase() }.toSet() != currentAuthors) ||
+        (tags != null && tags.map { it.trim().lowercase() }.toSet() != currentTags) ||
+        (isbn != null && isbn != current.isbn) ||
+        (links != null && links.map { it.url.trim().lowercase() }.toSet() != currentLinks) ||
+        (titleLock != null && titleLock != current.titleLock) ||
+        (summaryLock != null && summaryLock != current.summaryLock) ||
+        (numberLock != null && numberLock != current.numberLock) ||
+        (numberSortLock != null && numberSortLock != current.numberSortLock) ||
+        (releaseDateLock != null && releaseDateLock != current.releaseDateLock) ||
+        (authorsLock != null && authorsLock != current.authorsLock) ||
+        (tagsLock != null && tagsLock != current.tagsLock) ||
+        (isbnLock != null && isbnLock != current.isbnLock) ||
+        (linksLock != null && linksLock != current.linksLock)
+}
+
+private fun SeriesAndBookMetadata.toDesiredHash(seriesId: MediaServerSeriesId): String {
+    val normalized = buildString {
+        append("seriesId=").append(seriesId.value).append('\n')
+        append("series=").append(normalizeSeriesMetadata(seriesMetadata)).append('\n')
+        append("books=").append(
+            bookMetadata.entries
+                .sortedBy { it.key.id.value }
+                .joinToString(separator = "|") { (book, metadata) ->
+                    "${book.id.value}:${normalizeBookMetadata(metadata)}"
+                }
+        )
+    }
+    val digest = MessageDigest.getInstance("SHA-256").digest(normalized.toByteArray())
+    return digest.joinToString("") { "%02x".format(it) }
+}
+
+private fun normalizeSeriesMetadata(metadata: SeriesMetadata): String {
+    fun sorted(values: Collection<String>) = values.map { it.trim().lowercase() }.sorted().joinToString(",")
+    val titles = metadata.titles
+        .sortedWith(compareBy({ it.type?.name ?: "" }, { it.language ?: "" }, { it.name }))
+        .joinToString(";") { "${it.type}:${it.language}:${it.name.trim()}" }
+    val authors = metadata.authors
+        .sortedWith(compareBy({ it.role.name }, { it.name }))
+        .joinToString(";") { "${it.role.name}:${it.name.trim()}" }
+    val links = metadata.links.sortedBy { it.url }.joinToString(";") { "${it.label}:${it.url}" }
+    val thumbHash = metadata.thumbnail?.bytes?.contentHashCode()?.toString() ?: "null"
+    return listOf(
+        metadata.status?.name ?: "",
+        metadata.title?.name ?: "",
+        titles,
+        metadata.summary ?: "",
+        metadata.publisher?.name ?: "",
+        sorted(metadata.alternativePublishers.map { it.name }),
+        metadata.readingDirection?.name ?: "",
+        metadata.ageRating?.toString() ?: "",
+        metadata.language ?: "",
+        sorted(metadata.genres),
+        sorted(metadata.tags),
+        metadata.totalBookCount?.toString() ?: "",
+        authors,
+        metadata.releaseDate?.year?.toString() ?: "",
+        links,
+        thumbHash
+    ).joinToString("|")
+}
+
+private fun normalizeBookMetadata(metadata: BookMetadata?): String {
+    if (metadata == null) return "null"
+    fun sorted(values: Collection<String>) = values.map { it.trim().lowercase() }.sorted().joinToString(",")
+    val authors = metadata.authors
+        .sortedWith(compareBy({ it.role.name }, { it.name }))
+        .joinToString(";") { "${it.role.name}:${it.name.trim()}" }
+    val links = metadata.links.sortedBy { it.url }.joinToString(";") { "${it.label}:${it.url}" }
+    val arcs = metadata.storyArcs
+        ?.sortedWith(compareBy({ it.number }, { it.name }))
+        ?.joinToString(";") { "${it.number}:${it.name}" }
+        ?: ""
+    val thumbHash = metadata.thumbnail?.bytes?.contentHashCode()?.toString() ?: "null"
+    return listOf(
+        metadata.title ?: "",
+        metadata.summary ?: "",
+        metadata.number?.toString() ?: "",
+        metadata.numberSort?.toString() ?: "",
+        metadata.releaseDate?.toString() ?: "",
+        authors,
+        sorted(metadata.tags),
+        metadata.isbn ?: "",
+        links,
+        arcs,
+        thumbHash
+    ).joinToString("|")
 }

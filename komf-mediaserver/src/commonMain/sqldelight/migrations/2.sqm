@@ -1,0 +1,24 @@
+CREATE TABLE IF NOT EXISTS LibraryRunCheckpoint (
+    libraryId        TEXT NOT NULL PRIMARY KEY,
+    pageNumber       INTEGER NOT NULL,
+    startIndexInPage INTEGER NOT NULL,
+    dryRun           INTEGER NOT NULL,
+    lastSeriesId     TEXT,
+    updatedAtEpochMs INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS library_run_checkpoint_updated_idx
+    ON LibraryRunCheckpoint(updatedAtEpochMs);
+
+CREATE TABLE IF NOT EXISTS LibrarySeriesRunResult (
+    libraryId        TEXT NOT NULL,
+    seriesId         TEXT NOT NULL,
+    desiredHash      TEXT NOT NULL,
+    status           TEXT NOT NULL,
+    updatedAtEpochMs INTEGER NOT NULL,
+    PRIMARY KEY (libraryId, seriesId)
+);
+CREATE INDEX IF NOT EXISTS library_series_result_library_idx
+    ON LibrarySeriesRunResult(libraryId);
+CREATE INDEX IF NOT EXISTS library_series_result_status_idx
+    ON LibrarySeriesRunResult(status);
+

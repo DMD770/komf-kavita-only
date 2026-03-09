@@ -34,6 +34,7 @@ import snd.komf.mediaserver.kavita.KavitaEventHandler
 import snd.komf.mediaserver.kavita.KavitaMediaServerClientAdapter
 import snd.komf.mediaserver.kavita.KavitaScanState
 import snd.komf.mediaserver.kavita.KavitaTokenProvider
+import snd.komf.mediaserver.kavita.KavitaWriteQueue
 import snd.komf.mediaserver.komga.KomgaEventHandler
 import snd.komf.mediaserver.komga.KomgaMediaServerClientAdapter
 import snd.komf.mediaserver.metadata.MetadataEventHandler
@@ -42,6 +43,8 @@ import snd.komf.mediaserver.metadata.MetadataMerger
 import snd.komf.mediaserver.metadata.MetadataPostProcessor
 import snd.komf.mediaserver.metadata.MetadataService
 import snd.komf.mediaserver.metadata.MetadataUpdater
+import snd.komf.mediaserver.metadata.repository.LibraryRunCheckpointRepository
+import snd.komf.mediaserver.metadata.repository.LibrarySeriesRunResultRepository
 import snd.komf.mediaserver.metadata.repository.BookThumbnailsRepository
 import snd.komf.mediaserver.metadata.repository.SeriesMatchRepository
 import snd.komf.mediaserver.metadata.repository.SeriesThumbnailsRepository
@@ -101,6 +104,8 @@ class MediaServerModule(
     private val kavitaNotificationsHandler: NotificationsEventHandler?
     private val kavitaEventHandler: KavitaEventHandler
     private val kavitaScanState: KavitaScanState
+    private val libraryRunCheckpointRepository: LibraryRunCheckpointRepository
+    private val librarySeriesRunResultRepository: LibrarySeriesRunResultRepository
 
     init {
         komgaBookThumbnailRepository = BookThumbnailsRepository(
@@ -196,6 +201,8 @@ class MediaServerModule(
             mediaServerDatabase.seriesMatchQueries,
             MediaServer.KAVITA
         )
+        libraryRunCheckpointRepository = LibraryRunCheckpointRepository(mediaServerDatabase.libraryRunCheckpointQueries)
+        librarySeriesRunResultRepository = LibrarySeriesRunResultRepository(mediaServerDatabase.librarySeriesRunResultQueries)
         kavitaKtorBase = ktorBaseClient.config {
             defaultRequest {
                 url {
@@ -221,7 +228,9 @@ class MediaServerModule(
             jsonBase,
             kavitaConfig.apiKey,
             updateEventsPerMinute = kavitaConfig.apiRateLimit.updateEventsPerMinute,
-            scanEventsPerMinute = kavitaConfig.apiRateLimit.scanEventsPerMinute
+            scanEventsPerMinute = kavitaConfig.apiRateLimit.scanEventsPerMinute,
+            failFastOnSqliteErrors = kavitaConfig.safeFullLibrary.failFastOnSqliteErrors,
+            writeQueue = KavitaWriteQueue()
         )
         kavitaScanState = KavitaScanState()
         kavitaApiCompatibilityChecker = KavitaApiCompatibilityChecker(kavitaClient)
@@ -241,6 +250,10 @@ class MediaServerModule(
             seriesThumbnailsRepository = kavitaSerThumbnailsRepository,
             bookThumbnailsRepository = kavitaBookThumbnailRepository,
             seriesMatchRepository = kavitaSeriesMatchRepository,
+            safeFullLibraryEnabled = kavitaConfig.safeFullLibrary.enabled,
+            safeFullLibraryScanPolicy = kavitaConfig.safeFullLibrary.scanPolicy,
+            runCheckpointRepository = libraryRunCheckpointRepository,
+            seriesRunResultRepository = librarySeriesRunResultRepository,
         )
         kavitaMetadataEventHandler = MetadataEventHandler(
             metadataServiceProvider = kavitaMetadataServiceProvider,
@@ -294,6 +307,11 @@ class MediaServerModule(
         seriesThumbnailsRepository: SeriesThumbnailsRepository,
         bookThumbnailsRepository: BookThumbnailsRepository,
         seriesMatchRepository: SeriesMatchRepository,
+        safeFullLibraryEnabled: Boolean = false,
+        safeFullLibraryScanPolicy: snd.komf.mediaserver.config.KavitaSafeFullLibraryScanPolicy =
+            snd.komf.mediaserver.config.KavitaSafeFullLibraryScanPolicy.NONE,
+        runCheckpointRepository: LibraryRunCheckpointRepository? = null,
+        seriesRunResultRepository: LibrarySeriesRunResultRepository? = null,
     ): MetadataServiceProvider {
         val defaultUpdaterService = createMetadataUpdateService(
             config = config.default,
@@ -317,7 +335,11 @@ class MediaServerModule(
             config = config.default,
             mediaServerClient = mediaServerClient,
             seriesMatchRepository = seriesMatchRepository,
-            metadataUpdateService = defaultUpdaterService
+            metadataUpdateService = defaultUpdaterService,
+            safeFullLibraryEnabled = safeFullLibraryEnabled,
+            safeFullLibraryScanPolicy = safeFullLibraryScanPolicy,
+            runCheckpointRepository = runCheckpointRepository,
+            seriesRunResultRepository = seriesRunResultRepository,
         )
         val libraryMetadataServices = config.library
             .map { (libraryId, config) ->
@@ -325,7 +347,11 @@ class MediaServerModule(
                     config = config,
                     mediaServerClient = mediaServerClient,
                     seriesMatchRepository = seriesMatchRepository,
-                    metadataUpdateService = libraryUpdaterServices[libraryId] ?: defaultUpdaterService
+                    metadataUpdateService = libraryUpdaterServices[libraryId] ?: defaultUpdaterService,
+                    safeFullLibraryEnabled = safeFullLibraryEnabled,
+                    safeFullLibraryScanPolicy = safeFullLibraryScanPolicy,
+                    runCheckpointRepository = runCheckpointRepository,
+                    seriesRunResultRepository = seriesRunResultRepository,
                 )
             }
             .toMap()
@@ -343,6 +369,10 @@ class MediaServerModule(
         metadataUpdateService: MetadataUpdater,
         mediaServerClient: MediaServerClient,
         seriesMatchRepository: SeriesMatchRepository,
+        safeFullLibraryEnabled: Boolean,
+        safeFullLibraryScanPolicy: snd.komf.mediaserver.config.KavitaSafeFullLibraryScanPolicy,
+        runCheckpointRepository: LibraryRunCheckpointRepository?,
+        seriesRunResultRepository: LibrarySeriesRunResultRepository?,
     ): MetadataService {
         return MetadataService(
             mediaServerClient = mediaServerClient,
@@ -353,6 +383,10 @@ class MediaServerModule(
             metadataMerger = MetadataMerger(mergeTags = config.mergeTags, mergeGenres = config.mergeGenres),
             libraryType = config.libraryType,
             jobTracker = jobTracker,
+            safeFullLibraryEnabled = safeFullLibraryEnabled,
+            safeFullLibraryScanPolicy = safeFullLibraryScanPolicy,
+            runCheckpointRepository = runCheckpointRepository,
+            seriesRunResultRepository = seriesRunResultRepository,
         )
     }
 

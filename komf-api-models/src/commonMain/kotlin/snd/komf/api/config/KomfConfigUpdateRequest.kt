@@ -33,6 +33,14 @@ data class KavitaConfigUpdateRequest(
     val apiKey: PatchValue<String> = PatchValue.Unset,
     val eventListener: PatchValue<EventListenerConfigUpdateRequest> = PatchValue.Unset,
     val metadataUpdate: PatchValue<MetadataUpdateConfigUpdateRequest> = PatchValue.Unset,
+    val safeFullLibrary: PatchValue<KavitaSafeFullLibraryConfigUpdateRequest> = PatchValue.Unset,
+)
+
+@Serializable
+data class KavitaSafeFullLibraryConfigUpdateRequest(
+    val enabled: PatchValue<Boolean> = PatchValue.Unset,
+    val scanPolicy: PatchValue<KomfKavitaSafeFullLibraryScanPolicy> = PatchValue.Unset,
+    val failFastOnSqliteErrors: PatchValue<Boolean> = PatchValue.Unset,
 )
 
 @Serializable

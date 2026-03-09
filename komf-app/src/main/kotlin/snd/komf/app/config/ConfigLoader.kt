@@ -81,6 +81,21 @@ class ConfigLoader(private val yaml: Yaml) {
         val kavitaActiveScanPollIntervalSeconds = System.getenv("KOMF_KAVITA_SCAN_ACTIVE_POLL_INTERVAL_SECONDS")
             ?.toLongOrNull()
             ?: kavitaConfig.scan.activeScanPollIntervalSeconds
+        val kavitaSafeFullLibraryEnabled = System.getenv("KOMF_KAVITA_SAFE_FULL_LIBRARY_ENABLED")
+            ?.toBooleanStrictOrNull()
+            ?: kavitaConfig.safeFullLibrary.enabled
+        val kavitaSafeFullLibraryScanPolicy = System.getenv("KOMF_KAVITA_SAFE_FULL_LIBRARY_SCAN_POLICY")
+            ?.trim()
+            ?.uppercase()
+            ?.let {
+                runCatching {
+                    snd.komf.mediaserver.config.KavitaSafeFullLibraryScanPolicy.valueOf(it)
+                }.getOrNull()
+            }
+            ?: kavitaConfig.safeFullLibrary.scanPolicy
+        val kavitaSafeFullLibraryFailFastOnSqliteErrors = System.getenv("KOMF_KAVITA_SAFE_FULL_LIBRARY_FAIL_FAST_ON_SQLITE_ERRORS")
+            ?.toBooleanStrictOrNull()
+            ?: kavitaConfig.safeFullLibrary.failFastOnSqliteErrors
 
         val serverConfig = config.server
         val serverPort = System.getenv("KOMF_SERVER_PORT")?.toIntOrNull() ?: serverConfig.port
@@ -118,6 +133,11 @@ class ConfigLoader(private val yaml: Yaml) {
                     waitForActiveScanToFinish = kavitaWaitForActiveScanToFinish,
                     activeScanWaitTimeoutSeconds = kavitaActiveScanWaitTimeoutSeconds,
                     activeScanPollIntervalSeconds = kavitaActiveScanPollIntervalSeconds
+                ),
+                safeFullLibrary = kavitaConfig.safeFullLibrary.copy(
+                    enabled = kavitaSafeFullLibraryEnabled,
+                    scanPolicy = kavitaSafeFullLibraryScanPolicy,
+                    failFastOnSqliteErrors = kavitaSafeFullLibraryFailFastOnSqliteErrors
                 )
             ),
 
