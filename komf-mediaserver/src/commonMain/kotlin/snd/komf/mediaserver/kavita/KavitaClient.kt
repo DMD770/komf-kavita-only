@@ -44,6 +44,8 @@ class KavitaClient(
     scanEventsPerMinute: Int = 30,
     private val failFastOnSqliteErrors: Boolean = true,
     private val writeQueue: KavitaWriteQueue = KavitaWriteQueue(),
+    private val scanState: KavitaScanState? = null,
+    private val scanPausePolicy: KavitaScanPausePolicy = KavitaScanPausePolicy(),
 ) {
     @Volatile
     private var activeRunMetrics: KavitaRunMetrics? = null
@@ -56,6 +58,7 @@ class KavitaClient(
         eventsPerInterval = scanEventsPerMinute.coerceAtLeast(1),
         interval = 60.seconds
     )
+    private val writeScanGate = KavitaWriteScanGate(scanState, scanPausePolicy)
 
     suspend fun getSeries(seriesId: KavitaSeriesId): KavitaSeries {
         activeRunMetrics?.recordRead(KavitaEndpoint.SERIES)
@@ -111,8 +114,10 @@ class KavitaClient(
     suspend fun updateSeries(seriesUpdate: KavitaSeriesUpdateRequest) {
         enforceApplyModeWriteAllowed(KavitaEndpoint.SERIES_UPDATE)
         activeRunMetrics?.recordWrite(KavitaEndpoint.SERIES_UPDATE)
-        writeQueue.execute {
-            updatesRateLimiter.acquire()
+        executeQueuedWrite(
+            endpoint = KavitaEndpoint.SERIES_UPDATE,
+            beforeWrite = { updatesRateLimiter.acquire() }
+        ) {
             withTransientRetry("api/series/update") {
                 ktor.post("api/series/update") {
                     contentType(ContentType.Application.Json)
@@ -125,8 +130,10 @@ class KavitaClient(
     suspend fun updateSeriesMetadata(metadata: KavitaSeriesMetadataUpdateRequest) {
         enforceApplyModeWriteAllowed(KavitaEndpoint.SERIES_METADATA_POST)
         activeRunMetrics?.recordWrite(KavitaEndpoint.SERIES_METADATA_POST)
-        writeQueue.execute {
-            updatesRateLimiter.acquire()
+        executeQueuedWrite(
+            endpoint = KavitaEndpoint.SERIES_METADATA_POST,
+            beforeWrite = { updatesRateLimiter.acquire() }
+        ) {
             withTransientRetry("api/series/metadata") {
                 ktor.post("api/series/metadata") {
                     contentType(ContentType.Application.Json)
@@ -139,8 +146,10 @@ class KavitaClient(
     suspend fun updateChapterMetadata(metadata: KavitaChapterMetadataUpdateRequest) {
         enforceApplyModeWriteAllowed(KavitaEndpoint.CHAPTER_UPDATE)
         activeRunMetrics?.recordWrite(KavitaEndpoint.CHAPTER_UPDATE)
-        writeQueue.execute {
-            updatesRateLimiter.acquire()
+        executeQueuedWrite(
+            endpoint = KavitaEndpoint.CHAPTER_UPDATE,
+            beforeWrite = { updatesRateLimiter.acquire() }
+        ) {
             withTransientRetry("api/chapter/update") {
                 ktor.post("api/chapter/update") {
                     contentType(ContentType.Application.Json)
@@ -212,8 +221,10 @@ class KavitaClient(
     suspend fun uploadSeriesCover(seriesId: KavitaSeriesId, cover: Image, lockCover: Boolean) {
         enforceApplyModeWriteAllowed(KavitaEndpoint.UPLOAD_SERIES)
         activeRunMetrics?.recordWrite(KavitaEndpoint.UPLOAD_SERIES)
-        writeQueue.execute {
-            updatesRateLimiter.acquire()
+        executeQueuedWrite(
+            endpoint = KavitaEndpoint.UPLOAD_SERIES,
+            beforeWrite = { updatesRateLimiter.acquire() }
+        ) {
             val base64Image = Base64.getEncoder().encodeToString(cover.bytes)
             withTransientRetry("api/upload/series") {
                 ktor.post("api/upload/series") {
@@ -227,8 +238,10 @@ class KavitaClient(
     suspend fun uploadVolumeCover(volumeId: KavitaVolumeId, cover: Image, lockCover: Boolean) {
         enforceApplyModeWriteAllowed(KavitaEndpoint.UPLOAD_VOLUME)
         activeRunMetrics?.recordWrite(KavitaEndpoint.UPLOAD_VOLUME)
-        writeQueue.execute {
-            updatesRateLimiter.acquire()
+        executeQueuedWrite(
+            endpoint = KavitaEndpoint.UPLOAD_VOLUME,
+            beforeWrite = { updatesRateLimiter.acquire() }
+        ) {
             val base64Image = Base64.getEncoder().encodeToString(cover.bytes)
             logger.info { "POST /api/upload/volume volumeId=${volumeId.value}" }
             withTransientRetry("api/upload/volume") {
@@ -248,8 +261,11 @@ class KavitaClient(
     suspend fun scanSeries(libraryId: KavitaLibraryId, seriesId: KavitaSeriesId) {
         activeRunMetrics?.recordWrite(KavitaEndpoint.SCAN_SERIES)
         activeRunMetrics?.markScanIssued()
-        writeQueue.execute {
-            scanRateLimiter.acquire()
+        executeQueuedWrite(
+            endpoint = KavitaEndpoint.SCAN_SERIES,
+            gateOnActiveScan = false,
+            beforeWrite = { scanRateLimiter.acquire() }
+        ) {
             withTransientRetry("api/series/scan") {
                 ktor.post("api/series/scan") {
                     contentType(ContentType.Application.Json)
@@ -267,8 +283,11 @@ class KavitaClient(
     suspend fun scanLibrary(libraryId: KavitaLibraryId) {
         activeRunMetrics?.recordWrite(KavitaEndpoint.SCAN_LIBRARY)
         activeRunMetrics?.markScanIssued()
-        writeQueue.execute {
-            scanRateLimiter.acquire()
+        executeQueuedWrite(
+            endpoint = KavitaEndpoint.SCAN_LIBRARY,
+            gateOnActiveScan = false,
+            beforeWrite = { scanRateLimiter.acquire() }
+        ) {
             withTransientRetry("api/library/scan") {
                 ktor.post("api/library/scan") {
                     parameter("libraryId", libraryId.value)
@@ -279,7 +298,9 @@ class KavitaClient(
 
     suspend fun resetChapterLock(chapterId: KavitaChapterId) {
         activeRunMetrics?.recordWrite(KavitaEndpoint.RESET_CHAPTER_LOCK)
-        writeQueue.execute {
+        executeQueuedWrite(
+            endpoint = KavitaEndpoint.RESET_CHAPTER_LOCK
+        ) {
             withTransientRetry("api/upload/chapter|api/upload/reset-chapter-lock") {
                 try {
                     ktor.post("api/upload/chapter") {
@@ -306,6 +327,20 @@ class KavitaClient(
                     }
                 }
             }
+        }
+    }
+
+    private suspend fun <T> executeQueuedWrite(
+        endpoint: KavitaEndpoint,
+        gateOnActiveScan: Boolean = true,
+        beforeWrite: suspend () -> Unit = {},
+        block: suspend () -> T
+    ): T {
+        return writeQueue.execute {
+            if (gateOnActiveScan) writeScanGate.awaitSafeWriteWindow(endpoint)
+            beforeWrite()
+            if (gateOnActiveScan) writeScanGate.awaitSafeWriteWindow(endpoint)
+            block()
         }
     }
 

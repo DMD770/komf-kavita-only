@@ -42,6 +42,10 @@ data class KavitaScanConfig(
     val waitForActiveScanToFinish: Boolean = true,
     val activeScanWaitTimeoutSeconds: Long = 1800,
     val activeScanPollIntervalSeconds: Long = 2,
+    val pauseOnActiveScan: Boolean = true,
+    val resumeQuietPeriodSeconds: Long = 30,
+    val pauseTimeoutSeconds: Long = 1800,
+    val pollIntervalSeconds: Long = 2,
 )
 
 @Serializable

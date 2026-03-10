@@ -32,6 +32,7 @@ import snd.komf.mediaserver.kavita.KavitaAuthClient
 import snd.komf.mediaserver.kavita.KavitaClient
 import snd.komf.mediaserver.kavita.KavitaEventHandler
 import snd.komf.mediaserver.kavita.KavitaMediaServerClientAdapter
+import snd.komf.mediaserver.kavita.KavitaScanPausePolicy
 import snd.komf.mediaserver.kavita.KavitaScanState
 import snd.komf.mediaserver.kavita.KavitaTokenProvider
 import snd.komf.mediaserver.kavita.KavitaWriteQueue
@@ -224,6 +225,7 @@ class MediaServerModule(
                 bearer { loadTokens { BearerTokens(kavitaTokenProvider.getToken(), null) } }
             }
         }
+        kavitaScanState = KavitaScanState()
         kavitaClient = KavitaClient(
             kavitaKtorClient,
             jsonBase,
@@ -231,9 +233,15 @@ class MediaServerModule(
             updateEventsPerMinute = kavitaConfig.apiRateLimit.updateEventsPerMinute,
             scanEventsPerMinute = kavitaConfig.apiRateLimit.scanEventsPerMinute,
             failFastOnSqliteErrors = kavitaConfig.safeFullLibrary.failFastOnSqliteErrors,
-            writeQueue = KavitaWriteQueue()
+            writeQueue = KavitaWriteQueue(),
+            scanState = kavitaScanState,
+            scanPausePolicy = KavitaScanPausePolicy(
+                pauseOnActiveScan = kavitaConfig.scan.pauseOnActiveScan,
+                resumeQuietPeriodMs = kavitaConfig.scan.resumeQuietPeriodSeconds.coerceAtLeast(0).times(1000),
+                pauseTimeoutMs = kavitaConfig.scan.pauseTimeoutSeconds.coerceAtLeast(0).times(1000),
+                pollIntervalMs = kavitaConfig.scan.pollIntervalSeconds.coerceAtLeast(1).times(1000)
+            )
         )
-        kavitaScanState = KavitaScanState()
         kavitaApiCompatibilityChecker = KavitaApiCompatibilityChecker(kavitaClient)
         kavitaMediaServerClient = KavitaMediaServerClientAdapter(
             kavitaClient = kavitaClient,
@@ -241,7 +249,8 @@ class MediaServerModule(
                 .coerceAtLeast(0)
                 .times(1000),
             scanState = kavitaScanState,
-            scanSafetyEnabled = kavitaConfig.scan.waitForActiveScanToFinish && kavitaConfig.eventListener.enabled,
+            scanSafetyEnabled = kavitaConfig.scan.waitForActiveScanToFinish &&
+                (kavitaConfig.eventListener.enabled || kavitaConfig.scan.pauseOnActiveScan),
             activeScanWaitTimeoutMs = kavitaConfig.scan.activeScanWaitTimeoutSeconds.coerceAtLeast(0).times(1000),
             activeScanPollIntervalMs = kavitaConfig.scan.activeScanPollIntervalSeconds.coerceAtLeast(1).times(1000)
         )
@@ -282,15 +291,19 @@ class MediaServerModule(
             mediaServer = MediaServer.KAVITA
         )
 
+        val shouldStartKavitaEventHandler = kavitaConfig.eventListener.enabled || kavitaConfig.scan.pauseOnActiveScan
+        val kavitaEventListeners =
+            if (kavitaConfig.eventListener.enabled) listOfNotNull(kavitaMetadataEventHandler, kavitaNotificationsHandler)
+            else emptyList()
         kavitaEventHandler = KavitaEventHandler(
             baseUrl = io.ktor.http.URLBuilder(kavitaConfig.baseUri),
             kavitaClient = kavitaClient,
             tokenProvider = kavitaTokenProvider,
             clock = Clock.System,
             scanState = kavitaScanState,
-            eventListeners = listOfNotNull(kavitaMetadataEventHandler, kavitaNotificationsHandler),
+            eventListeners = kavitaEventListeners,
         )
-        if (kavitaConfig.eventListener.enabled) {
+        if (shouldStartKavitaEventHandler) {
             kavitaEventHandler.start()
         }
         if (!kavitaOnly && komgaConfig.eventListener.enabled) {
