@@ -1,6 +1,7 @@
 package snd.komf.mediaserver.config
 
 import kotlinx.serialization.Serializable
+import snd.komf.mediaserver.metadata.LibraryApplyMode
 import snd.komf.mediaserver.metadata.PublisherTagNameConfig
 import snd.komf.model.MediaType
 import snd.komf.model.MediaType.MANGA
@@ -48,6 +49,7 @@ data class KavitaSafeFullLibraryConfig(
     val enabled: Boolean = false,
     val scanPolicy: KavitaSafeFullLibraryScanPolicy = KavitaSafeFullLibraryScanPolicy.NONE,
     val failFastOnSqliteErrors: Boolean = true,
+    val applyMode: LibraryApplyMode = LibraryApplyMode.CORE,
 )
 
 @Serializable

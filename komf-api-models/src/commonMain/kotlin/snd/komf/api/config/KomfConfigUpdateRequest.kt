@@ -41,6 +41,7 @@ data class KavitaSafeFullLibraryConfigUpdateRequest(
     val enabled: PatchValue<Boolean> = PatchValue.Unset,
     val scanPolicy: PatchValue<KomfKavitaSafeFullLibraryScanPolicy> = PatchValue.Unset,
     val failFastOnSqliteErrors: PatchValue<Boolean> = PatchValue.Unset,
+    val applyMode: PatchValue<KomfLibraryApplyMode> = PatchValue.Unset,
 )
 
 @Serializable

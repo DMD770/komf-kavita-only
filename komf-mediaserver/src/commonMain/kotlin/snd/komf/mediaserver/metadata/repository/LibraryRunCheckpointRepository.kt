@@ -1,6 +1,7 @@
 package snd.komf.mediaserver.metadata.repository
 
 import snd.komf.mediaserver.metadata.LibraryRunCheckpoint
+import snd.komf.mediaserver.metadata.LibraryApplyMode
 import snd.komf.mediaserver.model.MediaServerLibraryId
 import snd.komf.mediaserver.model.MediaServerSeriesId
 import snd.komf.mediaserver.repository.LibraryRunCheckpointQueries
@@ -18,6 +19,7 @@ class LibraryRunCheckpointRepository(
             pageNumber = checkpoint.pageNumber.toLong(),
             startIndexInPage = checkpoint.startIndexInPage.toLong(),
             dryRun = if (checkpoint.dryRun) 1L else 0L,
+            applyMode = checkpoint.applyMode.name,
             lastSeriesId = checkpoint.lastCompletedSeriesId?.value,
             updatedAtEpochMs = checkpoint.updatedAtEpochMs
         )
@@ -31,8 +33,8 @@ class LibraryRunCheckpointRepository(
         pageNumber = pageNumber.toInt(),
         startIndexInPage = startIndexInPage.toInt(),
         dryRun = dryRun != 0L,
+        applyMode = LibraryApplyMode.valueOf(applyMode),
         lastCompletedSeriesId = lastSeriesId?.let { MediaServerSeriesId(it) },
         updatedAtEpochMs = updatedAtEpochMs
     )
 }
-

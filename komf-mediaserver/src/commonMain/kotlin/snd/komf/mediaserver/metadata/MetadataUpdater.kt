@@ -31,7 +31,15 @@ import kotlin.math.floor
 private val logger = KotlinLogging.logger {}
 
 data class MetadataApplyOutcome(
-    val desiredHash: String,
+    val desiredHashes: Map<LibraryApplyScope, String>,
+    val perScope: Map<LibraryApplyScope, ScopeWriteCounters>,
+    val planned: Int,
+    val changed: Int,
+    val skippedUnchanged: Int,
+    val written: Int,
+)
+
+data class ScopeWriteCounters(
     val planned: Int,
     val changed: Int,
     val skippedUnchanged: Int,
@@ -69,7 +77,8 @@ class MetadataUpdater(
 
     private data class BookUpdateOutcome(
         val coverUploaded: Boolean,
-        val counters: WriteCounters
+        val chapterCounters: WriteCounters,
+        val volumeCoverCounters: WriteCounters
     )
 
     private data class CoverReplaceOutcome(
@@ -86,35 +95,71 @@ class MetadataUpdater(
         return processedMetadata.toDesiredHash(seriesId)
     }
 
+    fun desiredHashes(seriesId: MediaServerSeriesId, metadata: SeriesAndBookMetadata): Map<LibraryApplyScope, String> {
+        val processedMetadata = postProcessor.process(metadata)
+        return processedMetadata.toScopeDesiredHashes(seriesId)
+    }
+
     suspend fun updateMetadata(series: MediaServerSeries, metadata: SeriesAndBookMetadata): MetadataApplyOutcome {
-        return updateMetadata(series, metadata, deferScan = false)
+        return updateMetadata(series, metadata, deferScan = false, applyMode = LibraryApplyMode.FULL)
     }
 
     suspend fun updateMetadata(
         series: MediaServerSeries,
         metadata: SeriesAndBookMetadata,
-        deferScan: Boolean
+        deferScan: Boolean,
+        applyMode: LibraryApplyMode = LibraryApplyMode.FULL
     ): MetadataApplyOutcome {
         val snapshotAwareClient = mediaServerClient as? SeriesPassSnapshotAware
         snapshotAwareClient?.beginSeriesPass(series.id)
 
         try {
             val processedMetadata = postProcessor.process(metadata)
-            val desiredHash = processedMetadata.toDesiredHash(series.id)
+            val desiredHashes = processedMetadata.toScopeDesiredHashes(series.id)
+            val selectedScopes = applyMode.scopes()
             val counters = WriteCounters()
-            counters.merge(updateSeriesMetadata(series, processedMetadata.seriesMetadata))
-            counters.merge(updateBookMetadata(series = series, unprocessedMetadata = metadata, processedMetadata = processedMetadata))
+            val perScopeCounters = mutableMapOf<LibraryApplyScope, WriteCounters>()
+
+            if (LibraryApplyScope.SERIES_METADATA in selectedScopes) {
+                val scopeCounters = updateSeriesApiMetadata(series, processedMetadata.seriesMetadata)
+                perScopeCounters[LibraryApplyScope.SERIES_METADATA] = scopeCounters
+                counters.merge(scopeCounters)
+            }
+
+            if (LibraryApplyScope.SERIES_COVER in selectedScopes) {
+                val scopeCounters = updateSeriesCover(series.id, processedMetadata.seriesMetadata)
+                perScopeCounters[LibraryApplyScope.SERIES_COVER] = scopeCounters
+                counters.merge(scopeCounters)
+            }
+
+            val bookScopeCounters = updateBookMetadata(
+                series = series,
+                unprocessedMetadata = metadata,
+                processedMetadata = processedMetadata,
+                selectedScopes = selectedScopes
+            )
+            perScopeCounters.putAll(bookScopeCounters)
+            bookScopeCounters.values.forEach { counters.merge(it) }
 
             logger.info {
-                "series ${series.id.value} write summary: planned=${counters.planned}, changed=${counters.changed}, " +
-                    "skipped_unchanged=${counters.skippedUnchanged}, written=${counters.written}"
+                "series ${series.id.value} write summary: mode=$applyMode, planned=${counters.planned}, changed=${counters.changed}, " +
+                    "skipped_unchanged=${counters.skippedUnchanged}, written=${counters.written}, " +
+                    "per_scope=${perScopeCounters.entries.joinToString { (scope, scopeCounters) -> "${scope.name}(p=${scopeCounters.planned},c=${scopeCounters.changed},s=${scopeCounters.skippedUnchanged},w=${scopeCounters.written})" }}"
             }
 
             if (updateModes.any { it in requireMetadataRefresh })
                 mediaServerClient.refreshMetadata(series.libraryId, series.id, deferScan = deferScan)
 
             return MetadataApplyOutcome(
-                desiredHash = desiredHash,
+                desiredHashes = desiredHashes,
+                perScope = perScopeCounters.mapValues { (_, value) ->
+                    ScopeWriteCounters(
+                        planned = value.planned,
+                        changed = value.changed,
+                        skippedUnchanged = value.skippedUnchanged,
+                        written = value.written
+                    )
+                },
                 planned = counters.planned,
                 changed = counters.changed,
                 skippedUnchanged = counters.skippedUnchanged,
@@ -139,7 +184,7 @@ class MetadataUpdater(
         resetSeriesMetadata(series, removeComicInfo)
     }
 
-    private suspend fun updateSeriesMetadata(series: MediaServerSeries, metadata: SeriesMetadata): WriteCounters {
+    private suspend fun updateSeriesApiMetadata(series: MediaServerSeries, metadata: SeriesMetadata): WriteCounters {
         val counters = WriteCounters()
         updateModes.forEach {
             when (it) {
@@ -159,16 +204,20 @@ class MetadataUpdater(
                 UpdateMode.COMIC_INFO -> {}
             }
         }
+        return counters
+    }
 
+    private suspend fun updateSeriesCover(seriesId: MediaServerSeriesId, metadata: SeriesMetadata): WriteCounters {
+        val counters = WriteCounters()
         val newThumbnail = if (uploadSeriesCovers) metadata.thumbnail else null
-        val seriesCoverOutcome = replaceSeriesThumbnail(series.id, newThumbnail)
+        val seriesCoverOutcome = replaceSeriesThumbnail(seriesId, newThumbnail)
         counters.merge(seriesCoverOutcome.counters)
 
         if (seriesCoverOutcome.thumbnailId == null) {
-            seriesThumbnailsRepository.delete(series.id)
+            seriesThumbnailsRepository.delete(seriesId)
         } else {
             seriesThumbnailsRepository.save(
-                seriesId = series.id,
+                seriesId = seriesId,
                 thumbnailId = seriesCoverOutcome.thumbnailId,
             )
         }
@@ -178,46 +227,59 @@ class MetadataUpdater(
     private suspend fun updateBookMetadata(
         series: MediaServerSeries,
         unprocessedMetadata: SeriesAndBookMetadata,
-        processedMetadata: SeriesAndBookMetadata
-    ): WriteCounters {
+        processedMetadata: SeriesAndBookMetadata,
+        selectedScopes: Set<LibraryApplyScope>
+    ): Map<LibraryApplyScope, WriteCounters> {
         val bookIdToWriteSeriesMetadata = bookToWriteSeriesMetadata(unprocessedMetadata.bookMetadata)
         val uploadedByBook = mutableMapOf<MediaServerBookId, Boolean>()
-        val counters = WriteCounters()
+        val chapterCounters = WriteCounters()
+        val volumeCoverCounters = WriteCounters()
 
         processedMetadata.bookMetadata.forEach { (book, metadata) ->
             val outcome = updateBookMetadata(
                 book,
                 metadata,
                 processedMetadata.seriesMetadata,
-                book.id == bookIdToWriteSeriesMetadata
+                book.id == bookIdToWriteSeriesMetadata,
+                applyChapterMetadata = LibraryApplyScope.CHAPTER_METADATA in selectedScopes,
+                applyVolumeCover = LibraryApplyScope.VOLUME_COVERS in selectedScopes
             )
             uploadedByBook[book.id] = outcome.coverUploaded
-            counters.merge(outcome.counters)
+            chapterCounters.merge(outcome.chapterCounters)
+            volumeCoverCounters.merge(outcome.volumeCoverCounters)
         }
 
         logVolumeCoverSummary(series, processedMetadata, uploadedByBook)
-        return counters
+
+        val out = mutableMapOf<LibraryApplyScope, WriteCounters>()
+        if (LibraryApplyScope.CHAPTER_METADATA in selectedScopes) out[LibraryApplyScope.CHAPTER_METADATA] = chapterCounters
+        if (LibraryApplyScope.VOLUME_COVERS in selectedScopes) out[LibraryApplyScope.VOLUME_COVERS] = volumeCoverCounters
+        return out
     }
 
     private suspend fun updateBookMetadata(
         book: MediaServerBook,
         metadata: BookMetadata?,
         seriesMeta: SeriesMetadata,
-        writeSeriesMetadata: Boolean
+        writeSeriesMetadata: Boolean,
+        applyChapterMetadata: Boolean,
+        applyVolumeCover: Boolean
     ): BookUpdateOutcome {
-        val counters = WriteCounters()
+        val chapterCounters = WriteCounters()
+        val volumeCoverCounters = WriteCounters()
         logger.info { "updating book ${book.name}" }
         updateModes.forEach { mode ->
             when (mode) {
                 UpdateMode.API -> {
+                    if (!applyChapterMetadata) return@forEach
                     val patch = metadataUpdateMapper.toBookMetadataUpdate(metadata, seriesMeta, book)
-                    counters.planned += 1
+                    chapterCounters.planned += 1
                     if (patch.hasChangesComparedTo(book.metadata)) {
-                        counters.changed += 1
+                        chapterCounters.changed += 1
                         mediaServerClient.updateBookMetadata(book.id, patch)
-                        counters.written += 1
+                        chapterCounters.written += 1
                     } else {
-                        counters.skippedUnchanged += 1
+                        chapterCounters.skippedUnchanged += 1
                     }
                 }
 
@@ -241,20 +303,28 @@ class MetadataUpdater(
             }
         }
 
-        val newThumbnail = if (uploadBookCovers) metadata?.thumbnail else null
-        val bookCoverOutcome = replaceBookThumbnail(book.id, newThumbnail)
-        counters.merge(bookCoverOutcome.counters)
+        var uploaded = false
+        if (applyVolumeCover) {
+            val newThumbnail = if (uploadBookCovers) metadata?.thumbnail else null
+            val bookCoverOutcome = replaceBookThumbnail(book.id, newThumbnail)
+            volumeCoverCounters.merge(bookCoverOutcome.counters)
+            uploaded = bookCoverOutcome.uploaded
 
-        if (bookCoverOutcome.thumbnailId == null) {
-            bookThumbnailsRepository.delete(book.id)
-        } else {
-            bookThumbnailsRepository.save(
-                seriesId = book.seriesId,
-                bookId = book.id,
-                thumbnailId = bookCoverOutcome.thumbnailId,
-            )
+            if (bookCoverOutcome.thumbnailId == null) {
+                bookThumbnailsRepository.delete(book.id)
+            } else {
+                bookThumbnailsRepository.save(
+                    seriesId = book.seriesId,
+                    bookId = book.id,
+                    thumbnailId = bookCoverOutcome.thumbnailId,
+                )
+            }
         }
-        return BookUpdateOutcome(coverUploaded = bookCoverOutcome.uploaded, counters = counters)
+        return BookUpdateOutcome(
+            coverUploaded = uploaded,
+            chapterCounters = chapterCounters,
+            volumeCoverCounters = volumeCoverCounters
+        )
     }
 
     private fun logVolumeCoverSummary(
@@ -494,22 +564,53 @@ private fun MediaServerBookMetadataUpdate.hasChangesComparedTo(current: MediaSer
 }
 
 private fun SeriesAndBookMetadata.toDesiredHash(seriesId: MediaServerSeriesId): String {
+    val scopeHashes = toScopeDesiredHashes(seriesId)
     val normalized = buildString {
         append("seriesId=").append(seriesId.value).append('\n')
-        append("series=").append(normalizeSeriesMetadata(seriesMetadata)).append('\n')
-        append("books=").append(
-            bookMetadata.entries
-                .sortedBy { it.key.id.value }
-                .joinToString(separator = "|") { (book, metadata) ->
-                    "${book.id.value}:${normalizeBookMetadata(metadata)}"
-                }
-        )
+        LibraryApplyScope.entries.forEach { scope ->
+            append(scope.name).append('=').append(scopeHashes[scope]).append('\n')
+        }
     }
     val digest = MessageDigest.getInstance("SHA-256").digest(normalized.toByteArray())
     return digest.joinToString("") { "%02x".format(it) }
 }
 
-private fun normalizeSeriesMetadata(metadata: SeriesMetadata): String {
+private fun SeriesAndBookMetadata.toScopeDesiredHashes(seriesId: MediaServerSeriesId): Map<LibraryApplyScope, String> {
+    val seriesMetaBase = normalizeSeriesMetadataWithoutThumbnail(seriesMetadata)
+    val seriesThumbnailValue = normalizeSeriesThumbnail(seriesMetadata)
+    val volumeCoverValue = bookMetadata.entries
+        .sortedBy { it.key.id.value }
+        .joinToString(separator = "|") { (book, metadata) ->
+            "${book.id.value}:${normalizeBookThumbnail(metadata)}"
+        }
+    val chapterMetadataValue = bookMetadata.entries
+        .sortedBy { it.key.id.value }
+        .joinToString(separator = "|") { (book, metadata) ->
+            "${book.id.value}:${normalizeBookMetadataWithoutThumbnail(metadata)}"
+        }
+
+    return mapOf(
+        LibraryApplyScope.SERIES_METADATA to hashValue("seriesId=${seriesId.value}|seriesMeta=$seriesMetaBase"),
+        LibraryApplyScope.SERIES_COVER to hashValue("seriesId=${seriesId.value}|seriesCover=$seriesThumbnailValue"),
+        LibraryApplyScope.VOLUME_COVERS to hashValue("seriesId=${seriesId.value}|volumeCovers=$volumeCoverValue"),
+        LibraryApplyScope.CHAPTER_METADATA to hashValue("seriesId=${seriesId.value}|chapterMeta=$chapterMetadataValue")
+    )
+}
+
+private fun hashValue(value: String): String {
+    val digest = MessageDigest.getInstance("SHA-256").digest(value.toByteArray())
+    return digest.joinToString("") { "%02x".format(it) }
+}
+
+private fun normalizeSeriesThumbnail(metadata: SeriesMetadata): String {
+    return metadata.thumbnail?.bytes?.contentHashCode()?.toString() ?: "null"
+}
+
+private fun normalizeBookThumbnail(metadata: BookMetadata?): String {
+    return metadata?.thumbnail?.bytes?.contentHashCode()?.toString() ?: "null"
+}
+
+private fun normalizeSeriesMetadataWithoutThumbnail(metadata: SeriesMetadata): String {
     fun sorted(values: Collection<String>) = values.map { it.trim().lowercase() }.sorted().joinToString(",")
     val titles = metadata.titles
         .sortedWith(compareBy({ it.type?.name ?: "" }, { it.language ?: "" }, { it.name }))
@@ -518,7 +619,6 @@ private fun normalizeSeriesMetadata(metadata: SeriesMetadata): String {
         .sortedWith(compareBy({ it.role.name }, { it.name }))
         .joinToString(";") { "${it.role.name}:${it.name.trim()}" }
     val links = metadata.links.sortedBy { it.url }.joinToString(";") { "${it.label}:${it.url}" }
-    val thumbHash = metadata.thumbnail?.bytes?.contentHashCode()?.toString() ?: "null"
     return listOf(
         metadata.status?.name ?: "",
         metadata.title?.name ?: "",
@@ -534,12 +634,11 @@ private fun normalizeSeriesMetadata(metadata: SeriesMetadata): String {
         metadata.totalBookCount?.toString() ?: "",
         authors,
         metadata.releaseDate?.year?.toString() ?: "",
-        links,
-        thumbHash
+        links
     ).joinToString("|")
 }
 
-private fun normalizeBookMetadata(metadata: BookMetadata?): String {
+private fun normalizeBookMetadataWithoutThumbnail(metadata: BookMetadata?): String {
     if (metadata == null) return "null"
     fun sorted(values: Collection<String>) = values.map { it.trim().lowercase() }.sorted().joinToString(",")
     val authors = metadata.authors
@@ -550,7 +649,6 @@ private fun normalizeBookMetadata(metadata: BookMetadata?): String {
         ?.sortedWith(compareBy({ it.number }, { it.name }))
         ?.joinToString(";") { "${it.number}:${it.name}" }
         ?: ""
-    val thumbHash = metadata.thumbnail?.bytes?.contentHashCode()?.toString() ?: "null"
     return listOf(
         metadata.title ?: "",
         metadata.summary ?: "",
@@ -561,7 +659,6 @@ private fun normalizeBookMetadata(metadata: BookMetadata?): String {
         sorted(metadata.tags),
         metadata.isbn ?: "",
         links,
-        arcs,
-        thumbHash
+        arcs
     ).joinToString("|")
 }

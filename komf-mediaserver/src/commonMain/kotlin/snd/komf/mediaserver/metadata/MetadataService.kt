@@ -132,6 +132,8 @@ data class LibraryRunSummary(
     val startedAtEpochMs: Long,
     val finishedAtEpochMs: Long,
     val dryRun: Boolean,
+    val applyMode: LibraryApplyMode,
+    val applyModeSource: String,
     val totalSeries: Int,
     val processedSeries: Int,
     val updatedSeries: Int,
@@ -147,6 +149,7 @@ data class LibraryRunCheckpoint(
     val pageNumber: Int,
     val startIndexInPage: Int,
     val dryRun: Boolean,
+    val applyMode: LibraryApplyMode,
     val lastCompletedSeriesId: MediaServerSeriesId? = null,
     val updatedAtEpochMs: Long,
 )
@@ -186,6 +189,7 @@ class MetadataService(
     private val jobTracker: KomfJobTracker,
     private val safeFullLibraryEnabled: Boolean = false,
     private val safeFullLibraryScanPolicy: KavitaSafeFullLibraryScanPolicy = KavitaSafeFullLibraryScanPolicy.NONE,
+    private val defaultLibraryApplyMode: LibraryApplyMode = LibraryApplyMode.CORE,
     private val runCheckpointRepository: LibraryRunCheckpointRepository? = null,
     private val seriesRunResultRepository: LibrarySeriesRunResultRepository? = null,
 ) {
@@ -269,7 +273,11 @@ class MetadataService(
         return jobId
     }
 
-    fun matchLibraryMetadata(libraryId: MediaServerLibraryId, dryRun: Boolean = false) {
+    fun matchLibraryMetadata(
+        libraryId: MediaServerLibraryId,
+        dryRun: Boolean = false,
+        applyModeOverride: LibraryApplyMode? = null
+    ) {
         if (activeLibraryRuns.containsKey(libraryId.value)) {
             logger.warn { "Library match already active for ${libraryId.value}; ignoring duplicate start request." }
             return
@@ -282,44 +290,57 @@ class MetadataService(
                 val startPageNumber = 1
                 val startIndexInPage = 0
                 val effectiveDryRun = dryRun
-                val resumedFromCheckpoint = checkpoint != null && checkpoint.dryRun == effectiveDryRun
+                val effectiveApplyMode = applyModeOverride ?: checkpoint?.applyMode ?: defaultLibraryApplyMode
+                val applyModeSource = when {
+                    applyModeOverride != null -> "api_override"
+                    checkpoint?.applyMode != null -> "checkpoint_resume"
+                    else -> "config_default"
+                }
+                val resumedFromCheckpoint = checkpoint != null &&
+                    checkpoint.dryRun == effectiveDryRun &&
+                    checkpoint.applyMode == effectiveApplyMode
                 val kavitaAdapter = mediaServerClient as? KavitaMediaServerClientAdapter
                 val runMetrics = kavitaAdapter?.let {
                     KavitaRunMetrics(
                         libraryId = libraryId.value,
                         dryRun = effectiveDryRun,
-                        resumedFromCheckpoint = resumedFromCheckpoint
+                        resumedFromCheckpoint = resumedFromCheckpoint,
+                        applyMode = effectiveApplyMode.name
                     )
                 }
                 kavitaAdapter?.setActiveRunMetrics(runMetrics)
 
                 logger.info {
                     "Starting library match for ${libraryId.value} " +
-                        "(dryRun=$effectiveDryRun, safeFullLibrary=$safeFullLibraryEnabled, scanPolicy=$safeFullLibraryScanPolicy)"
+                        "(dryRun=$effectiveDryRun, applyMode=$effectiveApplyMode, applyModeSource=$applyModeSource, " +
+                        "safeFullLibrary=$safeFullLibraryEnabled, scanPolicy=$safeFullLibraryScanPolicy)"
                 }
 
                 if (runControl.stopRequested.get()) {
                     logger.warn { "Skipping library match for ${libraryId.value}: stop was requested before start." }
-                    saveCheckpoint(libraryId, startPageNumber, startIndexInPage, effectiveDryRun, null)
+                    saveCheckpoint(libraryId, startPageNumber, startIndexInPage, effectiveDryRun, effectiveApplyMode, null)
                     return@launch
                 }
                 if (!waitForRunWindow("match library", libraryId, runControl)) {
                     logger.warn { "Skipping library match for ${libraryId.value}: interrupted before start." }
-                    saveCheckpoint(libraryId, startPageNumber, startIndexInPage, effectiveDryRun, null)
+                    saveCheckpoint(libraryId, startPageNumber, startIndexInPage, effectiveDryRun, effectiveApplyMode, null)
                     return@launch
                 }
 
-                if (checkpoint == null || checkpoint.dryRun != effectiveDryRun) {
+                if (checkpoint == null || checkpoint.dryRun != effectiveDryRun || checkpoint.applyMode != effectiveApplyMode) {
                     clearSkippedSeries(libraryId)
                 } else {
                     logger.info {
-                        "Resuming from checkpoint for ${libraryId.value} at page ${checkpoint.pageNumber}, index ${checkpoint.startIndexInPage}"
+                        "Resuming from checkpoint for ${libraryId.value} at page ${checkpoint.pageNumber}, " +
+                            "index ${checkpoint.startIndexInPage}, applyMode=${checkpoint.applyMode}"
                     }
                 }
                 val startedAtEpochMs = System.currentTimeMillis()
                 var errorCount = 0
-                var pageNumber = checkpoint?.pageNumber ?: startPageNumber
-                var pageStartIndex = checkpoint?.startIndexInPage ?: startIndexInPage
+                val compatibleCheckpoint =
+                    checkpoint?.takeIf { it.dryRun == effectiveDryRun && it.applyMode == effectiveApplyMode }
+                var pageNumber = compatibleCheckpoint?.pageNumber ?: startPageNumber
+                var pageStartIndex = compatibleCheckpoint?.startIndexInPage ?: startIndexInPage
                 var totalSeries = 0
                 var processedSeries = 0
                 var updatedSeries = 0
@@ -336,13 +357,13 @@ class MetadataService(
                 pageLoop@ do {
                     if (runControl.stopRequested.get()) {
                         stoppedByUser = true
-                        saveCheckpoint(libraryId, pageNumber, pageStartIndex, effectiveDryRun, checkpoint?.lastCompletedSeriesId)
+                        saveCheckpoint(libraryId, pageNumber, pageStartIndex, effectiveDryRun, effectiveApplyMode, compatibleCheckpoint?.lastCompletedSeriesId)
                         stopCheckpoint = pageNumber to pageStartIndex
                         break@pageLoop
                     }
                     if (!waitForRunWindow("match library", libraryId, runControl)) {
                         abortedBySafetyTimeout = true
-                        saveCheckpoint(libraryId, pageNumber, pageStartIndex, effectiveDryRun, checkpoint?.lastCompletedSeriesId)
+                        saveCheckpoint(libraryId, pageNumber, pageStartIndex, effectiveDryRun, effectiveApplyMode, compatibleCheckpoint?.lastCompletedSeriesId)
                         break@pageLoop
                     }
                     val page = mediaServerClient.getSeries(libraryId, pageNumber)
@@ -359,13 +380,13 @@ class MetadataService(
                         }
                         if (runControl.stopRequested.get()) {
                             stoppedByUser = true
-                            saveCheckpoint(libraryId, pageNumber, nextIndexForCheckpoint, effectiveDryRun, seriesEntry.id)
+                            saveCheckpoint(libraryId, pageNumber, nextIndexForCheckpoint, effectiveDryRun, effectiveApplyMode, seriesEntry.id)
                             stopCheckpoint = pageNumber to nextIndexForCheckpoint
                             break@pageLoop
                         }
                         if (!waitForRunWindow("match library", libraryId, runControl)) {
                             abortedBySafetyTimeout = true
-                            saveCheckpoint(libraryId, pageNumber, nextIndexForCheckpoint, effectiveDryRun, seriesEntry.id)
+                            saveCheckpoint(libraryId, pageNumber, nextIndexForCheckpoint, effectiveDryRun, effectiveApplyMode, seriesEntry.id)
                             break
                         }
                         runCatching {
@@ -380,6 +401,7 @@ class MetadataService(
                                 seriesEntry.id,
                                 deferScans = true,
                                 dryRun = effectiveDryRun,
+                                applyMode = effectiveApplyMode,
                                 libraryIdHint = libraryId,
                                 seriesHint = seriesEntry
                             )
@@ -412,7 +434,7 @@ class MetadataService(
                         if (sawProcessingError) processingErrors += 1
                         if (sawFatalProcessingError) {
                             stoppedByFatal = true
-                            saveCheckpoint(libraryId, pageNumber, nextIndexForCheckpoint, effectiveDryRun, seriesEntry.id)
+                            saveCheckpoint(libraryId, pageNumber, nextIndexForCheckpoint, effectiveDryRun, effectiveApplyMode, seriesEntry.id)
                         }
                     }
                             .onFailure {
@@ -421,7 +443,7 @@ class MetadataService(
                             unexpectedErrors += 1
                             if (it is KavitaSqliteCorruptionException || isFatalKavitaProcessingError(it.message)) {
                                 stoppedByFatal = true
-                                saveCheckpoint(libraryId, pageNumber, nextIndexForCheckpoint, effectiveDryRun, seriesEntry.id)
+                                saveCheckpoint(libraryId, pageNumber, nextIndexForCheckpoint, effectiveDryRun, effectiveApplyMode, seriesEntry.id)
                             }
                         }
                         if (stoppedByFatal) break@pageLoop
@@ -432,6 +454,7 @@ class MetadataService(
                             pageNumber = pageNumber,
                             startIndexInPage = nextIndexForCheckpoint,
                             dryRun = effectiveDryRun,
+                            applyMode = effectiveApplyMode,
                             lastCompletedSeriesId = seriesEntry.id
                         )
                     }
@@ -501,6 +524,8 @@ class MetadataService(
                 startedAtEpochMs = startedAtEpochMs,
                 finishedAtEpochMs = System.currentTimeMillis(),
                 dryRun = effectiveDryRun,
+                applyMode = effectiveApplyMode,
+                applyModeSource = applyModeSource,
                 totalSeries = totalSeries,
                 processedSeries = processedSeries,
                 updatedSeries = updatedSeries,
@@ -523,6 +548,7 @@ class MetadataService(
         seriesId: MediaServerSeriesId,
         deferScans: Boolean = false,
         dryRun: Boolean = false,
+        applyMode: LibraryApplyMode = LibraryApplyMode.FULL,
         libraryIdHint: MediaServerLibraryId? = null,
         seriesHint: MediaServerSeries? = null,
     ): MetadataJobId {
@@ -577,18 +603,21 @@ class MetadataService(
                     )
                 } else metadata
             }
-            val desiredHash = metadataUpdateService.desiredHash(series.id, metadata)
+            val desiredHashes = metadataUpdateService.desiredHashes(series.id, metadata)
+            val targetScopes = applyMode.scopes()
 
             if (!dryRun) {
-                val previous = seriesRunResultRepository?.get(series.libraryId, series.id)
-                if (previous != null &&
-                    previous.desiredHash == desiredHash &&
-                    (previous.status == LibrarySeriesRunStatus.APPLIED || previous.status == LibrarySeriesRunStatus.SKIPPED)
-                ) {
+                val alreadySettledScopes = targetScopes.filter { scope ->
+                    val previous = seriesRunResultRepository?.get(series.libraryId, series.id, scope) ?: return@filter false
+                    previous.desiredHash == desiredHashes[scope] &&
+                        (previous.status == LibrarySeriesRunStatus.APPLIED || previous.status == LibrarySeriesRunStatus.SKIPPED)
+                }.toSet()
+                if (alreadySettledScopes.size == targetScopes.size) {
                     activeKavitaRunMetrics()?.incrementSeriesResumedSkipped()
                     activeKavitaRunMetrics()?.incrementSeriesSkippedUnchanged()
+                    targetScopes.forEach { scope -> activeKavitaRunMetrics()?.incrementSeriesSkippedUnchangedScope(scope) }
                     logger.info {
-                        "Skipping series \"${seriesTitle}\" ${series.id} during resume; unchanged desired hash already ${previous.status}"
+                        "Skipping series \"${seriesTitle}\" ${series.id} during resume; unchanged desired hashes for scopes=${targetScopes.map { it.name }}"
                     }
                     return@launchJob
                 }
@@ -597,36 +626,63 @@ class MetadataService(
             if (dryRun) {
                 logger.info {
                     "dry-run match for series \"${seriesTitle}\" ${series.id}: " +
-                        "would update using provider ${matchResult.first.providerName()} " +
-                        "(books=${books.size}, deferScan=$deferScans)"
+                    "would update using provider ${matchResult.first.providerName()} " +
+                        "(books=${books.size}, deferScan=$deferScans, applyMode=$applyMode, scopes=${targetScopes.map { it.name }})"
                 }
                 return@launchJob
             }
 
             eventFlow.emit(PostProcessingStartEvent)
             try {
-                val applyOutcome = metadataUpdateService.updateMetadata(series, metadata, deferScan = deferScans)
-                seriesRunResultRepository?.save(
-                    libraryId = series.libraryId,
-                    seriesId = series.id,
-                    desiredHash = applyOutcome.desiredHash,
-                    status = if (applyOutcome.written > 0) LibrarySeriesRunStatus.APPLIED else LibrarySeriesRunStatus.SKIPPED
+                val applyOutcome = metadataUpdateService.updateMetadata(
+                    series = series,
+                    metadata = metadata,
+                    deferScan = deferScans,
+                    applyMode = applyMode
                 )
-                if (applyOutcome.written > 0) {
+                var appliedAnyScope = false
+                targetScopes.forEach { scope ->
+                    val scopeCounters = applyOutcome.perScope[scope]
+                    val status = if ((scopeCounters?.written ?: 0) > 0) {
+                        LibrarySeriesRunStatus.APPLIED
+                    } else {
+                        LibrarySeriesRunStatus.SKIPPED
+                    }
+                    seriesRunResultRepository?.save(
+                        libraryId = series.libraryId,
+                        seriesId = series.id,
+                        scope = scope,
+                        desiredHash = applyOutcome.desiredHashes[scope] ?: desiredHashes.getValue(scope),
+                        status = status
+                    )
+
+                    if (status == LibrarySeriesRunStatus.APPLIED) {
+                        appliedAnyScope = true
+                        activeKavitaRunMetrics()?.incrementSeriesAppliedScope(scope)
+                    } else {
+                        activeKavitaRunMetrics()?.incrementSeriesSkippedUnchangedScope(scope)
+                    }
+                }
+                if (appliedAnyScope) {
                     activeKavitaRunMetrics()?.incrementSeriesApplied()
                 } else {
                     activeKavitaRunMetrics()?.incrementSeriesSkippedUnchanged()
                 }
             } catch (fatal: KavitaSqliteCorruptionException) {
-                seriesRunResultRepository?.save(
-                    libraryId = series.libraryId,
-                    seriesId = series.id,
-                    desiredHash = desiredHash,
-                    status = LibrarySeriesRunStatus.FATAL
-                )
+                targetScopes.forEach { scope ->
+                    seriesRunResultRepository?.save(
+                        libraryId = series.libraryId,
+                        seriesId = series.id,
+                        scope = scope,
+                        desiredHash = desiredHashes.getValue(scope),
+                        status = LibrarySeriesRunStatus.FATAL
+                    )
+                }
                 throw fatal
             }
-            logger.info { "finished metadata update of series \"${seriesTitle}\" ${series.id}" }
+            logger.info {
+                "finished metadata update of series \"${seriesTitle}\" ${series.id} (applyMode=$applyMode, scopes=${targetScopes.map { it.name }})"
+            }
         }
 
         return jobId
@@ -662,7 +718,7 @@ class MetadataService(
             if (mode == LibraryRunResumeMode.NEW) {
                 run.stopRequested.set(true)
                 clearCheckpoint(libraryId)
-                matchLibraryMetadata(libraryId, dryRun = false)
+                matchLibraryMetadata(libraryId, dryRun = false, applyModeOverride = defaultLibraryApplyMode)
             }
             return true
         }
@@ -671,13 +727,13 @@ class MetadataService(
             LibraryRunResumeMode.CONTINUE -> {
                 val checkpoint = getCheckpoint(libraryId)
                 if (checkpoint != null) {
-                    matchLibraryMetadata(libraryId, dryRun = checkpoint.dryRun)
+                    matchLibraryMetadata(libraryId, dryRun = checkpoint.dryRun, applyModeOverride = checkpoint.applyMode)
                     true
                 } else false
             }
             LibraryRunResumeMode.NEW -> {
                 clearCheckpoint(libraryId)
-                matchLibraryMetadata(libraryId, dryRun = false)
+                matchLibraryMetadata(libraryId, dryRun = false, applyModeOverride = defaultLibraryApplyMode)
                 true
             }
         }
@@ -1108,12 +1164,14 @@ class MetadataService(
         pageNumber: Int,
         startIndexInPage: Int,
         dryRun: Boolean,
+        applyMode: LibraryApplyMode,
         lastCompletedSeriesId: MediaServerSeriesId?
     ) {
         val checkpoint = LibraryRunCheckpoint(
             pageNumber = pageNumber.coerceAtLeast(1),
             startIndexInPage = startIndexInPage.coerceAtLeast(0),
             dryRun = dryRun,
+            applyMode = applyMode,
             lastCompletedSeriesId = lastCompletedSeriesId,
             updatedAtEpochMs = System.currentTimeMillis()
         )
@@ -1187,6 +1245,7 @@ class MetadataService(
 
         logger.info {
             "Kavita run metrics for library=${metrics.libraryId}: " +
+                "apply_mode=${metrics.applyMode}, " +
                 "kavita_reads_total=${metrics.kavitaReadsTotal}, " +
                 "kavita_reads_cache_hits=${metrics.kavitaReadsCacheHits}, " +
                 "kavita_reads_cache_misses=${metrics.kavitaReadsCacheMisses}, " +
@@ -1201,10 +1260,26 @@ class MetadataService(
                 "checkpoint_resumed=${metrics.resumedFromCheckpoint}, " +
                 "scan_issued=${scanIssued} (count=${metrics.scansIssued})"
         }
+        logger.info { "Kavita series applied by scope: ${formatEndpointCounts(metrics.seriesAppliedByScope)}" }
+        logger.info { "Kavita series skipped_unchanged by scope: ${formatEndpointCounts(metrics.seriesSkippedUnchangedByScope)}" }
         logger.info { "Kavita endpoint reads: ${formatEndpointCounts(metrics.readsByEndpoint)}" }
         logger.info { "Kavita endpoint writes: ${formatEndpointCounts(metrics.writesByEndpoint)}" }
         logger.info { "Kavita cache hits by endpoint: ${formatEndpointCounts(metrics.cacheHitsByEndpoint)}" }
         logger.info { "Kavita cache misses by endpoint: ${formatEndpointCounts(metrics.cacheMissesByEndpoint)}" }
+
+        val chapterUpdates = metrics.writesByEndpoint["chapter_update"] ?: 0
+        if (metrics.applyMode == LibraryApplyMode.CORE.name && chapterUpdates > 0) {
+            logger.error {
+                "APPLY_MODE_VIOLATION: CORE run wrote chapter_update=$chapterUpdates (must be 0)."
+            }
+        }
+        val disallowedInChapters = listOf("series_update", "series_metadata_post", "upload_series", "upload_volume")
+            .sumOf { endpoint -> metrics.writesByEndpoint[endpoint] ?: 0 }
+        if (metrics.applyMode == LibraryApplyMode.CHAPTERS.name && disallowedInChapters > 0) {
+            logger.error {
+                "APPLY_MODE_VIOLATION: CHAPTERS run wrote disallowed core endpoints count=$disallowedInChapters."
+            }
+        }
     }
 
     private fun formatEndpointCounts(values: Map<String, Int>): String {

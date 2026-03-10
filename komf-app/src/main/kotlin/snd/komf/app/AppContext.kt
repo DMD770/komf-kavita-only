@@ -242,6 +242,7 @@ class AppContext(private val configPath: Path? = null) {
                 append("kavita.safeFullLibrary.enabled=${config.kavita.safeFullLibrary.enabled}, ")
                 append("kavita.safeFullLibrary.scanPolicy=${config.kavita.safeFullLibrary.scanPolicy}, ")
                 append("kavita.safeFullLibrary.failFastOnSqliteErrors=${config.kavita.safeFullLibrary.failFastOnSqliteErrors}, ")
+                append("kavita.safeFullLibrary.applyMode=${config.kavita.safeFullLibrary.applyMode}, ")
                 append("logLevel=${config.logLevel}, ")
                 append("httpLogLevel=${config.httpLogLevel}")
             }

@@ -24,6 +24,7 @@ import snd.komf.api.metadata.KomfMetadataJobResponse
 import snd.komf.api.metadata.KomfLibraryRunSummary
 import snd.komf.api.metadata.KomfLibraryRunControlStatus
 import snd.komf.api.metadata.KomfLibraryRunCheckpoint
+import snd.komf.api.metadata.KomfLibraryApplyMode
 import snd.komf.api.metadata.KomfLibraryRunResumeMode
 import snd.komf.api.metadata.KomfMetadataSeriesSearchResult
 import snd.komf.api.metadata.KomfRetrySkippedSeriesResponse
@@ -185,7 +186,23 @@ class MetadataRoutes(
             if (!call.checkRateLimit()) return@post
             val libraryId = MediaServerLibraryId(call.parameters.getOrFail("libraryId"))
             val dryRun = call.queryParameters["dryRun"].toBoolean()
-            metadataServiceProvider.first().metadataServiceFor(libraryId.value).matchLibraryMetadata(libraryId, dryRun = dryRun)
+            val applyModeRaw = call.queryParameters["applyMode"]
+            val applyModeDto = applyModeRaw
+                ?.let { runCatching { KomfLibraryApplyMode.valueOf(it.uppercase()) }.getOrNull() }
+            if (applyModeRaw != null && applyModeDto == null) {
+                call.respond(HttpStatusCode.BadRequest, KomfErrorResponse("Invalid applyMode '$applyModeRaw'. Expected CORE|CHAPTERS|FULL"))
+                return@post
+            }
+            val applyMode = applyModeDto
+                ?.let {
+                    when (it) {
+                        KomfLibraryApplyMode.CORE -> snd.komf.mediaserver.metadata.LibraryApplyMode.CORE
+                        KomfLibraryApplyMode.CHAPTERS -> snd.komf.mediaserver.metadata.LibraryApplyMode.CHAPTERS
+                        KomfLibraryApplyMode.FULL -> snd.komf.mediaserver.metadata.LibraryApplyMode.FULL
+                    }
+                }
+            metadataServiceProvider.first().metadataServiceFor(libraryId.value)
+                .matchLibraryMetadata(libraryId, dryRun = dryRun, applyModeOverride = applyMode)
             call.response.status(HttpStatusCode.Accepted)
         }
     }
@@ -366,6 +383,8 @@ class MetadataRoutes(
         startedAtEpochMs = startedAtEpochMs,
         finishedAtEpochMs = finishedAtEpochMs,
         dryRun = dryRun,
+        applyMode = KomfLibraryApplyMode.valueOf(applyMode.name),
+        applyModeSource = applyModeSource,
         totalSeries = totalSeries,
         processedSeries = processedSeries,
         updatedSeries = updatedSeries,
@@ -387,6 +406,7 @@ class MetadataRoutes(
                 pageNumber = it.pageNumber,
                 startIndexInPage = it.startIndexInPage,
                 dryRun = it.dryRun,
+                applyMode = KomfLibraryApplyMode.valueOf(it.applyMode.name),
                 updatedAtEpochMs = it.updatedAtEpochMs
             )
         }

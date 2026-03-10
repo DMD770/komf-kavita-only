@@ -8,6 +8,7 @@ import snd.komf.api.config.BookMetadataConfigUpdateRequest
 import snd.komf.api.config.DiscordConfigUpdateRequest
 import snd.komf.api.config.EventListenerConfigUpdateRequest
 import snd.komf.api.config.KavitaConfigUpdateRequest
+import snd.komf.api.config.KomfLibraryApplyMode
 import snd.komf.api.config.KomfKavitaSafeFullLibraryScanPolicy
 import snd.komf.api.config.KomfConfigUpdateRequest
 import snd.komf.api.config.KomgaConfigUpdateRequest
@@ -327,7 +328,13 @@ class AppConfigUpdateMapper {
                             null -> config.safeFullLibrary.scanPolicy
                         },
                         failFastOnSqliteErrors = it.failFastOnSqliteErrors.getOrNull()
-                            ?: config.safeFullLibrary.failFastOnSqliteErrors
+                            ?: config.safeFullLibrary.failFastOnSqliteErrors,
+                        applyMode = when (it.applyMode.getOrNull()) {
+                            KomfLibraryApplyMode.CORE -> snd.komf.mediaserver.metadata.LibraryApplyMode.CORE
+                            KomfLibraryApplyMode.CHAPTERS -> snd.komf.mediaserver.metadata.LibraryApplyMode.CHAPTERS
+                            KomfLibraryApplyMode.FULL -> snd.komf.mediaserver.metadata.LibraryApplyMode.FULL
+                            null -> config.safeFullLibrary.applyMode
+                        }
                     )
                 }
                 ?: config.safeFullLibrary,

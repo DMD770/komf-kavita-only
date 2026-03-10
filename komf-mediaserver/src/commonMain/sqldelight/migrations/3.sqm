@@ -1,0 +1,39 @@
+ALTER TABLE LibraryRunCheckpoint
+    ADD COLUMN applyMode TEXT NOT NULL DEFAULT 'CORE';
+
+CREATE TABLE IF NOT EXISTS LibrarySeriesRunResult_new (
+    libraryId        TEXT NOT NULL,
+    seriesId         TEXT NOT NULL,
+    scope            TEXT NOT NULL,
+    desiredHash      TEXT NOT NULL,
+    status           TEXT NOT NULL,
+    updatedAtEpochMs INTEGER NOT NULL,
+    PRIMARY KEY (libraryId, seriesId, scope)
+);
+
+INSERT INTO LibrarySeriesRunResult_new(libraryId, seriesId, scope, desiredHash, status, updatedAtEpochMs)
+SELECT libraryId, seriesId, 'SERIES_METADATA', 'legacy:' || desiredHash, status, updatedAtEpochMs
+FROM LibrarySeriesRunResult;
+
+INSERT INTO LibrarySeriesRunResult_new(libraryId, seriesId, scope, desiredHash, status, updatedAtEpochMs)
+SELECT libraryId, seriesId, 'SERIES_COVER', 'legacy:' || desiredHash, status, updatedAtEpochMs
+FROM LibrarySeriesRunResult;
+
+INSERT INTO LibrarySeriesRunResult_new(libraryId, seriesId, scope, desiredHash, status, updatedAtEpochMs)
+SELECT libraryId, seriesId, 'VOLUME_COVERS', 'legacy:' || desiredHash, status, updatedAtEpochMs
+FROM LibrarySeriesRunResult;
+
+INSERT INTO LibrarySeriesRunResult_new(libraryId, seriesId, scope, desiredHash, status, updatedAtEpochMs)
+SELECT libraryId, seriesId, 'CHAPTER_METADATA', 'legacy:' || desiredHash, status, updatedAtEpochMs
+FROM LibrarySeriesRunResult;
+
+DROP TABLE LibrarySeriesRunResult;
+
+ALTER TABLE LibrarySeriesRunResult_new RENAME TO LibrarySeriesRunResult;
+
+CREATE INDEX IF NOT EXISTS library_series_result_library_idx
+    ON LibrarySeriesRunResult(libraryId);
+CREATE INDEX IF NOT EXISTS library_series_result_status_idx
+    ON LibrarySeriesRunResult(status);
+CREATE INDEX IF NOT EXISTS library_series_result_scope_idx
+    ON LibrarySeriesRunResult(scope);

@@ -109,6 +109,7 @@ class KavitaClient(
     }
 
     suspend fun updateSeries(seriesUpdate: KavitaSeriesUpdateRequest) {
+        enforceApplyModeWriteAllowed(KavitaEndpoint.SERIES_UPDATE)
         activeRunMetrics?.recordWrite(KavitaEndpoint.SERIES_UPDATE)
         writeQueue.execute {
             updatesRateLimiter.acquire()
@@ -122,6 +123,7 @@ class KavitaClient(
     }
 
     suspend fun updateSeriesMetadata(metadata: KavitaSeriesMetadataUpdateRequest) {
+        enforceApplyModeWriteAllowed(KavitaEndpoint.SERIES_METADATA_POST)
         activeRunMetrics?.recordWrite(KavitaEndpoint.SERIES_METADATA_POST)
         writeQueue.execute {
             updatesRateLimiter.acquire()
@@ -135,6 +137,7 @@ class KavitaClient(
     }
 
     suspend fun updateChapterMetadata(metadata: KavitaChapterMetadataUpdateRequest) {
+        enforceApplyModeWriteAllowed(KavitaEndpoint.CHAPTER_UPDATE)
         activeRunMetrics?.recordWrite(KavitaEndpoint.CHAPTER_UPDATE)
         writeQueue.execute {
             updatesRateLimiter.acquire()
@@ -207,6 +210,7 @@ class KavitaClient(
     }
 
     suspend fun uploadSeriesCover(seriesId: KavitaSeriesId, cover: Image, lockCover: Boolean) {
+        enforceApplyModeWriteAllowed(KavitaEndpoint.UPLOAD_SERIES)
         activeRunMetrics?.recordWrite(KavitaEndpoint.UPLOAD_SERIES)
         writeQueue.execute {
             updatesRateLimiter.acquire()
@@ -221,6 +225,7 @@ class KavitaClient(
     }
 
     suspend fun uploadVolumeCover(volumeId: KavitaVolumeId, cover: Image, lockCover: Boolean) {
+        enforceApplyModeWriteAllowed(KavitaEndpoint.UPLOAD_VOLUME)
         activeRunMetrics?.recordWrite(KavitaEndpoint.UPLOAD_VOLUME)
         writeQueue.execute {
             updatesRateLimiter.acquire()
@@ -438,6 +443,37 @@ class KavitaClient(
 
     fun setActiveRunMetrics(metrics: KavitaRunMetrics?) {
         activeRunMetrics = metrics
+    }
+
+    private fun enforceApplyModeWriteAllowed(endpoint: KavitaEndpoint) {
+        val mode = activeRunMetrics?.currentApplyMode() ?: return
+        if (!isWriteEndpointAllowedForApplyMode(mode, endpoint)) {
+            val message = "Apply mode violation: mode=$mode attempted forbidden Kavita write endpoint=${endpoint.key}"
+            logger.error { message }
+            throw IllegalStateException(message)
+        }
+    }
+}
+
+internal fun isWriteEndpointAllowedForApplyMode(applyMode: String, endpoint: KavitaEndpoint): Boolean {
+    return when (applyMode.uppercase()) {
+        "CORE" -> endpoint in setOf(
+            KavitaEndpoint.SERIES_UPDATE,
+            KavitaEndpoint.SERIES_METADATA_POST,
+            KavitaEndpoint.UPLOAD_SERIES,
+            KavitaEndpoint.UPLOAD_VOLUME,
+            KavitaEndpoint.SCAN_SERIES,
+            KavitaEndpoint.SCAN_LIBRARY,
+            KavitaEndpoint.RESET_CHAPTER_LOCK
+        )
+        "CHAPTERS" -> endpoint in setOf(
+            KavitaEndpoint.CHAPTER_UPDATE,
+            KavitaEndpoint.SCAN_SERIES,
+            KavitaEndpoint.SCAN_LIBRARY,
+            KavitaEndpoint.RESET_CHAPTER_LOCK
+        )
+        "FULL" -> true
+        else -> true
     }
 }
 

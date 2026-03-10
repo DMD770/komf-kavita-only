@@ -1,5 +1,6 @@
 package snd.komf.mediaserver.kavita
 
+import snd.komf.mediaserver.metadata.LibraryApplyScope
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicInteger
 
@@ -27,6 +28,7 @@ data class KavitaRunMetricsSnapshot(
     val libraryId: String,
     val dryRun: Boolean,
     val resumedFromCheckpoint: Boolean,
+    val applyMode: String,
     val kavitaReadsTotal: Int,
     val kavitaReadsCacheHits: Int,
     val kavitaReadsCacheMisses: Int,
@@ -35,6 +37,8 @@ data class KavitaRunMetricsSnapshot(
     val seriesApplied: Int,
     val seriesResumedSkipped: Int,
     val scansIssued: Int,
+    val seriesAppliedByScope: Map<String, Int>,
+    val seriesSkippedUnchangedByScope: Map<String, Int>,
     val readsByEndpoint: Map<String, Int>,
     val writesByEndpoint: Map<String, Int>,
     val cacheHitsByEndpoint: Map<String, Int>,
@@ -45,6 +49,7 @@ class KavitaRunMetrics(
     private val libraryId: String,
     private val dryRun: Boolean,
     private val resumedFromCheckpoint: Boolean,
+    private val applyMode: String,
 ) {
     private val readsTotal = AtomicInteger(0)
     private val readsCacheHits = AtomicInteger(0)
@@ -54,6 +59,8 @@ class KavitaRunMetrics(
     private val seriesApplied = AtomicInteger(0)
     private val seriesResumedSkipped = AtomicInteger(0)
     private val scansIssued = AtomicInteger(0)
+    private val seriesAppliedByScope = ConcurrentHashMap<String, AtomicInteger>()
+    private val seriesSkippedByScope = ConcurrentHashMap<String, AtomicInteger>()
 
     private val readsByEndpoint = ConcurrentHashMap<String, AtomicInteger>()
     private val writesByEndpoint = ConcurrentHashMap<String, AtomicInteger>()
@@ -88,6 +95,14 @@ class KavitaRunMetrics(
         seriesApplied.incrementAndGet()
     }
 
+    fun incrementSeriesAppliedScope(scope: LibraryApplyScope) {
+        increment(seriesAppliedByScope, scope.name)
+    }
+
+    fun incrementSeriesSkippedUnchangedScope(scope: LibraryApplyScope) {
+        increment(seriesSkippedByScope, scope.name)
+    }
+
     fun incrementSeriesResumedSkipped() {
         seriesResumedSkipped.incrementAndGet()
     }
@@ -101,6 +116,7 @@ class KavitaRunMetrics(
             libraryId = libraryId,
             dryRun = dryRun,
             resumedFromCheckpoint = resumedFromCheckpoint,
+            applyMode = applyMode,
             kavitaReadsTotal = readsTotal.get(),
             kavitaReadsCacheHits = readsCacheHits.get(),
             kavitaReadsCacheMisses = readsCacheMisses.get(),
@@ -109,12 +125,16 @@ class KavitaRunMetrics(
             seriesApplied = seriesApplied.get(),
             seriesResumedSkipped = seriesResumedSkipped.get(),
             scansIssued = scansIssued.get(),
+            seriesAppliedByScope = toPlainMap(seriesAppliedByScope),
+            seriesSkippedUnchangedByScope = toPlainMap(seriesSkippedByScope),
             readsByEndpoint = toPlainMap(readsByEndpoint),
             writesByEndpoint = toPlainMap(writesByEndpoint),
             cacheHitsByEndpoint = toPlainMap(cacheHitsByEndpoint),
             cacheMissesByEndpoint = toPlainMap(cacheMissesByEndpoint)
         )
     }
+
+    fun currentApplyMode(): String = applyMode
 
     private fun increment(target: ConcurrentHashMap<String, AtomicInteger>, key: String) {
         target.computeIfAbsent(key) { AtomicInteger(0) }.incrementAndGet()

@@ -96,6 +96,13 @@ class ConfigLoader(private val yaml: Yaml) {
         val kavitaSafeFullLibraryFailFastOnSqliteErrors = System.getenv("KOMF_KAVITA_SAFE_FULL_LIBRARY_FAIL_FAST_ON_SQLITE_ERRORS")
             ?.toBooleanStrictOrNull()
             ?: kavitaConfig.safeFullLibrary.failFastOnSqliteErrors
+        val kavitaSafeFullLibraryApplyMode = System.getenv("KOMF_KAVITA_SAFE_FULL_LIBRARY_APPLY_MODE")
+            ?.trim()
+            ?.uppercase()
+            ?.let {
+                runCatching { snd.komf.mediaserver.metadata.LibraryApplyMode.valueOf(it) }.getOrNull()
+            }
+            ?: kavitaConfig.safeFullLibrary.applyMode
 
         val serverConfig = config.server
         val serverPort = System.getenv("KOMF_SERVER_PORT")?.toIntOrNull() ?: serverConfig.port
@@ -137,7 +144,8 @@ class ConfigLoader(private val yaml: Yaml) {
                 safeFullLibrary = kavitaConfig.safeFullLibrary.copy(
                     enabled = kavitaSafeFullLibraryEnabled,
                     scanPolicy = kavitaSafeFullLibraryScanPolicy,
-                    failFastOnSqliteErrors = kavitaSafeFullLibraryFailFastOnSqliteErrors
+                    failFastOnSqliteErrors = kavitaSafeFullLibraryFailFastOnSqliteErrors,
+                    applyMode = kavitaSafeFullLibraryApplyMode
                 )
             ),
 

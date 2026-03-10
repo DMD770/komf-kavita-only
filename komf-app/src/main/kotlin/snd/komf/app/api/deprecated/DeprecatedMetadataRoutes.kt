@@ -20,6 +20,7 @@ import snd.komf.mediaserver.MediaServerClient
 import snd.komf.mediaserver.MetadataServiceProvider
 import snd.komf.mediaserver.jobs.KomfJobTracker
 import snd.komf.mediaserver.jobs.MetadataJobEvent.CompletionEvent
+import snd.komf.mediaserver.metadata.LibraryApplyMode
 import snd.komf.mediaserver.model.MediaServer
 import snd.komf.mediaserver.model.MediaServerLibraryId
 import snd.komf.mediaserver.model.MediaServerSeriesId
@@ -127,7 +128,14 @@ class DeprecatedMetadataRoutes(
             if (!call.checkRateLimit()) return@post
             val libraryId = MediaServerLibraryId(call.parameters.getOrFail("libraryId"))
             val dryRun = call.queryParameters["dryRun"].toBoolean()
-            metadataServiceProvider.first().metadataServiceFor(libraryId.value).matchLibraryMetadata(libraryId, dryRun = dryRun)
+            val applyModeRaw = call.queryParameters["applyMode"]
+            val applyMode = applyModeRaw?.let { runCatching { LibraryApplyMode.valueOf(it.uppercase()) }.getOrNull() }
+            if (applyModeRaw != null && applyMode == null) {
+                call.respond(HttpStatusCode.BadRequest, KomfErrorResponse("Invalid applyMode '$applyModeRaw'. Expected CORE|CHAPTERS|FULL"))
+                return@post
+            }
+            metadataServiceProvider.first().metadataServiceFor(libraryId.value)
+                .matchLibraryMetadata(libraryId, dryRun = dryRun, applyModeOverride = applyMode)
             call.response.status(HttpStatusCode.Accepted)
         }
     }

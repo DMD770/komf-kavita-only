@@ -9,6 +9,7 @@ import snd.komf.api.config.DiscordConfigDto
 import snd.komf.api.config.EventListenerConfigDto
 import snd.komf.api.config.KavitaConfigDto
 import snd.komf.api.config.KavitaSafeFullLibraryConfigDto
+import snd.komf.api.config.KomfLibraryApplyMode
 import snd.komf.api.config.KomfConfig
 import snd.komf.api.config.KomfKavitaSafeFullLibraryScanPolicy
 import snd.komf.api.config.KomgaConfigDto
@@ -76,7 +77,8 @@ class AppConfigMapper {
             safeFullLibrary = KavitaSafeFullLibraryConfigDto(
                 enabled = config.safeFullLibrary.enabled,
                 scanPolicy = KomfKavitaSafeFullLibraryScanPolicy.valueOf(config.safeFullLibrary.scanPolicy.name),
-                failFastOnSqliteErrors = config.safeFullLibrary.failFastOnSqliteErrors
+                failFastOnSqliteErrors = config.safeFullLibrary.failFastOnSqliteErrors,
+                applyMode = KomfLibraryApplyMode.valueOf(config.safeFullLibrary.applyMode.name)
             ),
         )
     }

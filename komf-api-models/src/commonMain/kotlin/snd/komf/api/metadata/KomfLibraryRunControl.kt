@@ -9,10 +9,18 @@ enum class KomfLibraryRunResumeMode {
 }
 
 @Serializable
+enum class KomfLibraryApplyMode {
+    CORE,
+    CHAPTERS,
+    FULL,
+}
+
+@Serializable
 data class KomfLibraryRunCheckpoint(
     val pageNumber: Int,
     val startIndexInPage: Int,
     val dryRun: Boolean,
+    val applyMode: KomfLibraryApplyMode,
     val updatedAtEpochMs: Long,
 )
 
@@ -24,4 +32,3 @@ data class KomfLibraryRunControlStatus(
     val hasCheckpoint: Boolean,
     val checkpoint: KomfLibraryRunCheckpoint? = null,
 )
-

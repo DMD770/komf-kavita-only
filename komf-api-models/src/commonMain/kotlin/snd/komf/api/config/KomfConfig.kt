@@ -39,12 +39,20 @@ data class KavitaSafeFullLibraryConfigDto(
     val enabled: Boolean,
     val scanPolicy: KomfKavitaSafeFullLibraryScanPolicy,
     val failFastOnSqliteErrors: Boolean,
+    val applyMode: KomfLibraryApplyMode,
 )
 
 @Serializable
 enum class KomfKavitaSafeFullLibraryScanPolicy {
     NONE,
     LIBRARY_END,
+}
+
+@Serializable
+enum class KomfLibraryApplyMode {
+    CORE,
+    CHAPTERS,
+    FULL,
 }
 
 @Serializable

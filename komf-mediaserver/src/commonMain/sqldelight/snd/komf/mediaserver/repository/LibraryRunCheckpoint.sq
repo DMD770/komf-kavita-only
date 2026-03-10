@@ -3,6 +3,7 @@ CREATE TABLE LibraryRunCheckpoint (
     pageNumber      INTEGER NOT NULL,
     startIndexInPage INTEGER NOT NULL,
     dryRun          INTEGER NOT NULL,
+    applyMode       TEXT NOT NULL,
     lastSeriesId    TEXT,
     updatedAtEpochMs INTEGER NOT NULL
 );
@@ -17,10 +18,10 @@ INSERT OR REPLACE INTO LibraryRunCheckpoint(
     pageNumber,
     startIndexInPage,
     dryRun,
+    applyMode,
     lastSeriesId,
     updatedAtEpochMs
-) VALUES (?, ?, ?, ?, ?, ?);
+) VALUES (?, ?, ?, ?, ?, ?, ?);
 
 deleteForLibrary:
 DELETE FROM LibraryRunCheckpoint WHERE libraryId = ?;
-

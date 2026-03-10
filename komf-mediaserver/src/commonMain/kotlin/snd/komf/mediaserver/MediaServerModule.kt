@@ -38,6 +38,7 @@ import snd.komf.mediaserver.kavita.KavitaWriteQueue
 import snd.komf.mediaserver.komga.KomgaEventHandler
 import snd.komf.mediaserver.komga.KomgaMediaServerClientAdapter
 import snd.komf.mediaserver.metadata.MetadataEventHandler
+import snd.komf.mediaserver.metadata.LibraryApplyMode
 import snd.komf.mediaserver.metadata.MetadataMapper
 import snd.komf.mediaserver.metadata.MetadataMerger
 import snd.komf.mediaserver.metadata.MetadataPostProcessor
@@ -252,6 +253,7 @@ class MediaServerModule(
             seriesMatchRepository = kavitaSeriesMatchRepository,
             safeFullLibraryEnabled = kavitaConfig.safeFullLibrary.enabled,
             safeFullLibraryScanPolicy = kavitaConfig.safeFullLibrary.scanPolicy,
+            defaultLibraryApplyMode = kavitaConfig.safeFullLibrary.applyMode,
             runCheckpointRepository = libraryRunCheckpointRepository,
             seriesRunResultRepository = librarySeriesRunResultRepository,
         )
@@ -310,6 +312,7 @@ class MediaServerModule(
         safeFullLibraryEnabled: Boolean = false,
         safeFullLibraryScanPolicy: snd.komf.mediaserver.config.KavitaSafeFullLibraryScanPolicy =
             snd.komf.mediaserver.config.KavitaSafeFullLibraryScanPolicy.NONE,
+        defaultLibraryApplyMode: LibraryApplyMode = LibraryApplyMode.FULL,
         runCheckpointRepository: LibraryRunCheckpointRepository? = null,
         seriesRunResultRepository: LibrarySeriesRunResultRepository? = null,
     ): MetadataServiceProvider {
@@ -338,6 +341,7 @@ class MediaServerModule(
             metadataUpdateService = defaultUpdaterService,
             safeFullLibraryEnabled = safeFullLibraryEnabled,
             safeFullLibraryScanPolicy = safeFullLibraryScanPolicy,
+            defaultLibraryApplyMode = defaultLibraryApplyMode,
             runCheckpointRepository = runCheckpointRepository,
             seriesRunResultRepository = seriesRunResultRepository,
         )
@@ -350,6 +354,7 @@ class MediaServerModule(
                     metadataUpdateService = libraryUpdaterServices[libraryId] ?: defaultUpdaterService,
                     safeFullLibraryEnabled = safeFullLibraryEnabled,
                     safeFullLibraryScanPolicy = safeFullLibraryScanPolicy,
+                    defaultLibraryApplyMode = defaultLibraryApplyMode,
                     runCheckpointRepository = runCheckpointRepository,
                     seriesRunResultRepository = seriesRunResultRepository,
                 )
@@ -371,6 +376,7 @@ class MediaServerModule(
         seriesMatchRepository: SeriesMatchRepository,
         safeFullLibraryEnabled: Boolean,
         safeFullLibraryScanPolicy: snd.komf.mediaserver.config.KavitaSafeFullLibraryScanPolicy,
+        defaultLibraryApplyMode: LibraryApplyMode,
         runCheckpointRepository: LibraryRunCheckpointRepository?,
         seriesRunResultRepository: LibrarySeriesRunResultRepository?,
     ): MetadataService {
@@ -385,6 +391,7 @@ class MediaServerModule(
             jobTracker = jobTracker,
             safeFullLibraryEnabled = safeFullLibraryEnabled,
             safeFullLibraryScanPolicy = safeFullLibraryScanPolicy,
+            defaultLibraryApplyMode = defaultLibraryApplyMode,
             runCheckpointRepository = runCheckpointRepository,
             seriesRunResultRepository = seriesRunResultRepository,
         )

@@ -10,6 +10,8 @@ data class KomfLibraryRunSummary(
     val startedAtEpochMs: Long,
     val finishedAtEpochMs: Long,
     val dryRun: Boolean,
+    val applyMode: KomfLibraryApplyMode,
+    val applyModeSource: String,
     val totalSeries: Int,
     val processedSeries: Int,
     val updatedSeries: Int,

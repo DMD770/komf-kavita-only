@@ -1,13 +1,18 @@
 CREATE TABLE LibrarySeriesRunResult (
     libraryId        TEXT NOT NULL,
     seriesId         TEXT NOT NULL,
+    scope            TEXT NOT NULL,
     desiredHash      TEXT NOT NULL,
     status           TEXT NOT NULL,
     updatedAtEpochMs INTEGER NOT NULL,
-    PRIMARY KEY (libraryId, seriesId)
+    PRIMARY KEY (libraryId, seriesId, scope)
 );
 CREATE INDEX library_series_result_library_idx ON LibrarySeriesRunResult(libraryId);
 CREATE INDEX library_series_result_status_idx ON LibrarySeriesRunResult(status);
+CREATE INDEX library_series_result_scope_idx ON LibrarySeriesRunResult(scope);
+
+getForScope:
+SELECT * FROM LibrarySeriesRunResult WHERE libraryId = ? AND seriesId = ? AND scope = ?;
 
 getForSeries:
 SELECT * FROM LibrarySeriesRunResult WHERE libraryId = ? AND seriesId = ?;
@@ -16,11 +21,11 @@ upsert:
 INSERT OR REPLACE INTO LibrarySeriesRunResult(
     libraryId,
     seriesId,
+    scope,
     desiredHash,
     status,
     updatedAtEpochMs
-) VALUES (?, ?, ?, ?, ?);
+) VALUES (?, ?, ?, ?, ?, ?);
 
 deleteForLibrary:
 DELETE FROM LibrarySeriesRunResult WHERE libraryId = ?;
-
