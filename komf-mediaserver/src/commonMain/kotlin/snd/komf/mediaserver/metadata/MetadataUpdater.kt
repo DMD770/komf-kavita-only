@@ -4,6 +4,7 @@ import io.github.oshai.kotlinlogging.KotlinLogging
 import snd.komf.comicinfo.ComicInfoWriter
 import snd.komf.mediaserver.MediaServerClient
 import snd.komf.mediaserver.SeriesPassSnapshotAware
+import snd.komf.mediaserver.VolumeCoverTargetResolver
 import snd.komf.mediaserver.model.MediaServerBook
 import snd.komf.mediaserver.model.MediaServerBookId
 import snd.komf.mediaserver.model.MediaServerBookMetadata
@@ -76,9 +77,14 @@ class MetadataUpdater(
     }
 
     private data class BookUpdateOutcome(
-        val coverUploaded: Boolean,
-        val chapterCounters: WriteCounters,
-        val volumeCoverCounters: WriteCounters
+        val chapterCounters: WriteCounters
+    )
+
+    private data class VolumeCoverApplyOutcome(
+        val counters: WriteCounters,
+        val candidateCount: Int,
+        val uniqueTargetCount: Int,
+        val skippedDuplicateCount: Int
     )
 
     private data class CoverReplaceOutcome(
@@ -231,9 +237,9 @@ class MetadataUpdater(
         selectedScopes: Set<LibraryApplyScope>
     ): Map<LibraryApplyScope, WriteCounters> {
         val bookIdToWriteSeriesMetadata = bookToWriteSeriesMetadata(unprocessedMetadata.bookMetadata)
-        val uploadedByBook = mutableMapOf<MediaServerBookId, Boolean>()
         val chapterCounters = WriteCounters()
-        val volumeCoverCounters = WriteCounters()
+        val applyChapterMetadata = LibraryApplyScope.CHAPTER_METADATA in selectedScopes
+        val applyVolumeCover = LibraryApplyScope.VOLUME_COVERS in selectedScopes
 
         processedMetadata.bookMetadata.forEach { (book, metadata) ->
             val outcome = updateBookMetadata(
@@ -241,19 +247,27 @@ class MetadataUpdater(
                 metadata,
                 processedMetadata.seriesMetadata,
                 book.id == bookIdToWriteSeriesMetadata,
-                applyChapterMetadata = LibraryApplyScope.CHAPTER_METADATA in selectedScopes,
-                applyVolumeCover = LibraryApplyScope.VOLUME_COVERS in selectedScopes
+                applyChapterMetadata = applyChapterMetadata
             )
-            uploadedByBook[book.id] = outcome.coverUploaded
             chapterCounters.merge(outcome.chapterCounters)
-            volumeCoverCounters.merge(outcome.volumeCoverCounters)
         }
 
-        logVolumeCoverSummary(series, processedMetadata, uploadedByBook)
+        val volumeCoverOutcome = if (applyVolumeCover) {
+            applyVolumeCoversDeduped(processedMetadata.bookMetadata)
+        } else {
+            VolumeCoverApplyOutcome(
+                counters = WriteCounters(),
+                candidateCount = 0,
+                uniqueTargetCount = 0,
+                skippedDuplicateCount = 0
+            )
+        }
+
+        logVolumeCoverSummary(series, volumeCoverOutcome)
 
         val out = mutableMapOf<LibraryApplyScope, WriteCounters>()
-        if (LibraryApplyScope.CHAPTER_METADATA in selectedScopes) out[LibraryApplyScope.CHAPTER_METADATA] = chapterCounters
-        if (LibraryApplyScope.VOLUME_COVERS in selectedScopes) out[LibraryApplyScope.VOLUME_COVERS] = volumeCoverCounters
+        if (applyChapterMetadata) out[LibraryApplyScope.CHAPTER_METADATA] = chapterCounters
+        if (applyVolumeCover) out[LibraryApplyScope.VOLUME_COVERS] = volumeCoverOutcome.counters
         return out
     }
 
@@ -262,11 +276,9 @@ class MetadataUpdater(
         metadata: BookMetadata?,
         seriesMeta: SeriesMetadata,
         writeSeriesMetadata: Boolean,
-        applyChapterMetadata: Boolean,
-        applyVolumeCover: Boolean
+        applyChapterMetadata: Boolean
     ): BookUpdateOutcome {
         val chapterCounters = WriteCounters()
-        val volumeCoverCounters = WriteCounters()
         logger.info { "updating book ${book.name}" }
         updateModes.forEach { mode ->
             when (mode) {
@@ -302,50 +314,72 @@ class MetadataUpdater(
 //                }
             }
         }
+        return BookUpdateOutcome(
+            chapterCounters = chapterCounters
+        )
+    }
 
-        var uploaded = false
-        if (applyVolumeCover) {
-            val newThumbnail = if (uploadBookCovers) metadata?.thumbnail else null
-            val bookCoverOutcome = replaceBookThumbnail(book.id, newThumbnail)
-            volumeCoverCounters.merge(bookCoverOutcome.counters)
-            uploaded = bookCoverOutcome.uploaded
+    private suspend fun applyVolumeCoversDeduped(
+        bookMetadata: Map<MediaServerBook, BookMetadata?>
+    ): VolumeCoverApplyOutcome {
+        val candidates = mutableListOf<VolumeCoverUploadCandidate>()
+        bookMetadata.forEach { (book, metadata) ->
+            val thumbnail = if (uploadBookCovers) metadata?.thumbnail else null
+            if (thumbnail == null) return@forEach
+            candidates += VolumeCoverUploadCandidate(
+                sourceSeriesId = book.seriesId,
+                sourceBookId = book.id,
+                targetVolumeId = resolveVolumeTargetId(book.id),
+                thumbnail = thumbnail
+            )
+        }
+
+        val dedupe = dedupeVolumeCoverUploadCandidates(candidates)
+        val counters = WriteCounters()
+        dedupe.uploadPlans.forEach { plan ->
+            val bookCoverOutcome = replaceBookThumbnail(plan.sourceBookId, plan.thumbnail)
+            counters.merge(bookCoverOutcome.counters)
 
             if (bookCoverOutcome.thumbnailId == null) {
-                bookThumbnailsRepository.delete(book.id)
+                bookThumbnailsRepository.delete(plan.sourceBookId)
             } else {
                 bookThumbnailsRepository.save(
-                    seriesId = book.seriesId,
-                    bookId = book.id,
+                    seriesId = plan.sourceSeriesId,
+                    bookId = plan.sourceBookId,
                     thumbnailId = bookCoverOutcome.thumbnailId,
                 )
             }
         }
-        return BookUpdateOutcome(
-            coverUploaded = uploaded,
-            chapterCounters = chapterCounters,
-            volumeCoverCounters = volumeCoverCounters
+
+        return VolumeCoverApplyOutcome(
+            counters = counters,
+            candidateCount = dedupe.candidateCount,
+            uniqueTargetCount = dedupe.uploadPlans.size,
+            skippedDuplicateCount = dedupe.skippedDuplicateCount
         )
     }
 
-    private fun logVolumeCoverSummary(
-        series: MediaServerSeries,
-        processedMetadata: SeriesAndBookMetadata,
-        uploadedByBook: Map<MediaServerBookId, Boolean>
-    ) {
-        val groups = processedMetadata.bookMetadata.entries
-            .groupBy { (book, _) ->
-                if (book.number > 0) "n:${book.number}" else "b:${book.id.value}"
+    private suspend fun resolveVolumeTargetId(bookId: MediaServerBookId): String {
+        val resolver = mediaServerClient as? VolumeCoverTargetResolver ?: return "book:${bookId.value}"
+        return runCatching { resolver.resolveVolumeTargetId(bookId) }
+            .getOrElse {
+                logger.warn(it) {
+                    "failed to resolve effective volume target for bookId=${bookId.value}; " +
+                        "falling back to book identity dedupe key"
+                }
+                "book:${bookId.value}"
             }
+    }
 
-        val total = groups.size
-        val effectiveParsed = groups.count { (key, _) -> key.startsWith("n:") }
-        val matched = groups.count { (_, entries) -> entries.any { (_, metadata) -> metadata?.thumbnail != null } }
-        val uploaded = groups.count { (_, entries) -> entries.any { (book, _) -> uploadedByBook[book.id] == true } }
-        val skipped = total - uploaded
-
+    private fun logVolumeCoverSummary(series: MediaServerSeries, outcome: VolumeCoverApplyOutcome) {
         logger.info {
-            "series ${series.id.value} volume-cover summary: total=$total, effectiveParsed=$effectiveParsed, " +
-                "matched=$matched, uploaded=$uploaded, skipped=$skipped"
+            "series ${series.id.value} volume-cover summary: " +
+                "volume_cover_candidates=${outcome.candidateCount}, " +
+                "volume_cover_unique_targets=${outcome.uniqueTargetCount}, " +
+                "volume_cover_uploaded=${outcome.counters.written}, " +
+                "volume_cover_skipped_duplicate=${outcome.skippedDuplicateCount}, " +
+                "volume_cover_skipped_unchanged=${outcome.counters.skippedUnchanged}, " +
+                "volume_cover_changed=${outcome.counters.changed}"
         }
     }
 
@@ -489,6 +523,55 @@ class MetadataUpdater(
     }
 }
 
+internal data class VolumeCoverUploadCandidate(
+    val sourceSeriesId: MediaServerSeriesId,
+    val sourceBookId: MediaServerBookId,
+    val targetVolumeId: String,
+    val thumbnail: Image,
+)
+
+internal data class VolumeCoverUploadPlan(
+    val sourceSeriesId: MediaServerSeriesId,
+    val sourceBookId: MediaServerBookId,
+    val targetVolumeId: String,
+    val imageHash: String,
+    val thumbnail: Image,
+)
+
+internal data class VolumeCoverUploadDedupeResult(
+    val candidateCount: Int,
+    val skippedDuplicateCount: Int,
+    val uploadPlans: List<VolumeCoverUploadPlan>,
+)
+
+internal fun dedupeVolumeCoverUploadCandidates(
+    candidates: List<VolumeCoverUploadCandidate>
+): VolumeCoverUploadDedupeResult {
+    val uniquePlans = LinkedHashMap<String, VolumeCoverUploadPlan>()
+    var duplicateCount = 0
+
+    candidates.forEach { candidate ->
+        val imageHash = hashBytes(candidate.thumbnail.bytes)
+        val dedupeKey = "${candidate.targetVolumeId}|$imageHash"
+        val plan = VolumeCoverUploadPlan(
+            sourceSeriesId = candidate.sourceSeriesId,
+            sourceBookId = candidate.sourceBookId,
+            targetVolumeId = candidate.targetVolumeId,
+            imageHash = imageHash,
+            thumbnail = candidate.thumbnail
+        )
+        if (uniquePlans.putIfAbsent(dedupeKey, plan) != null) {
+            duplicateCount += 1
+        }
+    }
+
+    return VolumeCoverUploadDedupeResult(
+        candidateCount = candidates.size,
+        skippedDuplicateCount = duplicateCount,
+        uploadPlans = uniquePlans.values.toList()
+    )
+}
+
 private fun MediaServerSeriesMetadataUpdate.hasChangesComparedTo(current: MediaServerSeriesMetadata): Boolean {
     val currentAltTitles = current.alternativeTitles
         .map { it.title.trim().lowercase() }
@@ -599,6 +682,11 @@ private fun SeriesAndBookMetadata.toScopeDesiredHashes(seriesId: MediaServerSeri
 
 private fun hashValue(value: String): String {
     val digest = MessageDigest.getInstance("SHA-256").digest(value.toByteArray())
+    return digest.joinToString("") { "%02x".format(it) }
+}
+
+private fun hashBytes(value: ByteArray): String {
+    val digest = MessageDigest.getInstance("SHA-256").digest(value)
     return digest.joinToString("") { "%02x".format(it) }
 }
 

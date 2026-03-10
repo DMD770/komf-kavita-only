@@ -8,6 +8,7 @@ import kotlinx.datetime.LocalTime
 import kotlinx.datetime.atTime
 import snd.komf.mediaserver.MediaServerClient
 import snd.komf.mediaserver.SeriesPassSnapshotAware
+import snd.komf.mediaserver.VolumeCoverTargetResolver
 import snd.komf.mediaserver.kavita.model.KavitaAgeRating
 import snd.komf.mediaserver.kavita.model.KavitaAgeRating.UNKNOWN
 import snd.komf.mediaserver.kavita.model.KavitaAuthor
@@ -60,7 +61,7 @@ class KavitaMediaServerClientAdapter(
     private val scanSafetyEnabled: Boolean = true,
     private val activeScanWaitTimeoutMs: Long = 1_800_000L,
     private val activeScanPollIntervalMs: Long = 2_000L,
-) : MediaServerClient, SeriesPassSnapshotAware {
+) : MediaServerClient, SeriesPassSnapshotAware, VolumeCoverTargetResolver {
     @Volatile
     private var activeRunMetrics: KavitaRunMetrics? = null
 
@@ -229,6 +230,11 @@ class KavitaMediaServerClientAdapter(
         logger.info { "uploading volume cover volumeId=${chapter.volumeId.value} bookId=${bookId.value}" }
         kavitaClient.uploadVolumeCover(chapter.volumeId, thumbnail, lock)
         return null
+    }
+
+    override suspend fun resolveVolumeTargetId(bookId: MediaServerBookId): String {
+        val chapter = getOrFetchChapter(bookId.toKavitaChapterId())
+        return chapter.volumeId.value.toString()
     }
 
     override suspend fun refreshMetadata(libraryId: MediaServerLibraryId, seriesId: MediaServerSeriesId, deferScan: Boolean) {
