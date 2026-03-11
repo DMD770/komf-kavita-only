@@ -173,7 +173,27 @@ class MetadataRoutes(
 
             val libraryId = call.parameters.getOrFail("libraryId")
             val seriesId = MediaServerSeriesId(call.parameters.getOrFail("seriesId"))
-            val jobId = metadataServiceProvider.first().metadataServiceFor(libraryId).matchSeriesMetadata(seriesId)
+            val applyModeRaw = call.queryParameters["applyMode"]
+            val applyModeDto = applyModeRaw
+                ?.let { runCatching { KomfLibraryApplyMode.valueOf(it.uppercase()) }.getOrNull() }
+            if (applyModeRaw != null && applyModeDto == null) {
+                call.respond(HttpStatusCode.BadRequest, KomfErrorResponse("Invalid applyMode '$applyModeRaw'. Expected CORE|CHAPTERS|FULL"))
+                return@post
+            }
+            val applyMode = applyModeDto
+                ?.let {
+                    when (it) {
+                        KomfLibraryApplyMode.CORE -> snd.komf.mediaserver.metadata.LibraryApplyMode.CORE
+                        KomfLibraryApplyMode.CHAPTERS -> snd.komf.mediaserver.metadata.LibraryApplyMode.CHAPTERS
+                        KomfLibraryApplyMode.FULL -> snd.komf.mediaserver.metadata.LibraryApplyMode.FULL
+                    }
+                }
+            val metadataService = metadataServiceProvider.first().metadataServiceFor(libraryId)
+            val jobId = if (applyMode != null) {
+                metadataService.matchSeriesMetadata(seriesId, applyMode = applyMode)
+            } else {
+                metadataService.matchSeriesMetadata(seriesId)
+            }
 
             call.respond(
                 KomfMetadataJobResponse(KomfMetadataJobId(jobId.value.toString()))

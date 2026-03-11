@@ -548,7 +548,7 @@ class MetadataService(
         seriesId: MediaServerSeriesId,
         deferScans: Boolean = false,
         dryRun: Boolean = false,
-        applyMode: LibraryApplyMode = LibraryApplyMode.FULL,
+        applyMode: LibraryApplyMode = defaultLibraryApplyMode,
         libraryIdHint: MediaServerLibraryId? = null,
         seriesHint: MediaServerSeries? = null,
     ): MetadataJobId {

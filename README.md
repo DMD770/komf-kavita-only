@@ -22,6 +22,12 @@ This fork includes focused Kavita hardening and behavior fixes beyond upstream d
   - per-series match/update triggers per-series scan when run individually
   - full-library match defers per-series scans and triggers one library scan at the end
   - avoids kicking off both series scan and library scan for the same library run
+- Apply-mode behavior for Kavita:
+  - `CORE` is the recommended default for normal Kavita metadata runs
+  - `CORE` updates series metadata, summary, external links, series cover, and volume covers
+  - `CORE` does not write chapter-level metadata
+  - `CHAPTERS` only writes chapter-level metadata
+  - `FULL` combines `CORE` and `CHAPTERS`
 - Cover-lock behavior:
   - supports split lock fields (`lockSeriesCover`, `lockVolumeCover`) in config/API
   - legacy `lockCovers` compatibility remains for older clients
@@ -619,9 +625,11 @@ Use the following HTTP endpoint to set series metadata from specified provider:
 ```
 
 - `POST /{media-server}/match/library/{libraryId}/series/{seriesId}`: Attempts to match the specified series in the
-  specified library.
+  specified library. Optional query `applyMode=CORE|CHAPTERS|FULL`. If omitted, the server uses the configured default
+  apply mode. In this fork, `CORE` is the recommended mode for normal Kavita runs because it skips chapter writes.
 - `POST /{media-server}/match/library/{libraryId}`: Attempts to match all series in the specified library.
   Optional query `dryRun=true` will only log planned matches/updates without writing metadata or triggering scans.
+  Optional query `applyMode=CORE|CHAPTERS|FULL`.
 - `POST /{media-server}/reset/library/{libraryId}/series/{seriesId}`: Resets all metadata for the specified series in
   the specified library.
 - `POST /{media-server}/reset/library/{libraryId}`: Resets all metadata for all series in the specified library.

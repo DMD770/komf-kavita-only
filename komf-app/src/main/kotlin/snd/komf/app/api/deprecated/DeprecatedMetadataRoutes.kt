@@ -114,7 +114,18 @@ class DeprecatedMetadataRoutes(
 
             val libraryId = call.parameters.getOrFail("libraryId")
             val seriesId = MediaServerSeriesId(call.parameters.getOrFail("seriesId"))
-            val jobId = metadataServiceProvider.first().metadataServiceFor(libraryId).matchSeriesMetadata(seriesId)
+            val applyModeRaw = call.queryParameters["applyMode"]
+            val applyMode = applyModeRaw?.let { runCatching { LibraryApplyMode.valueOf(it.uppercase()) }.getOrNull() }
+            if (applyModeRaw != null && applyMode == null) {
+                call.respond(HttpStatusCode.BadRequest, KomfErrorResponse("Invalid applyMode '$applyModeRaw'. Expected CORE|CHAPTERS|FULL"))
+                return@post
+            }
+            val metadataService = metadataServiceProvider.first().metadataServiceFor(libraryId)
+            val jobId = if (applyMode != null) {
+                metadataService.matchSeriesMetadata(seriesId, applyMode = applyMode)
+            } else {
+                metadataService.matchSeriesMetadata(seriesId)
+            }
             jobTracker.first().getMetadataJobEvents(jobId)
                 ?.takeWhile { it != CompletionEvent }
                 ?.collect {}
