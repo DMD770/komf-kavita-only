@@ -19,9 +19,12 @@ import kotlinx.datetime.toInstant
 import snd.komf.mediaserver.BookEvent
 import snd.komf.mediaserver.MediaServerEventListener
 import snd.komf.mediaserver.SeriesEvent
+import snd.komf.mediaserver.kavita.model.KavitaSeriesId
 import snd.komf.mediaserver.kavita.model.KavitaVolumeId
+import snd.komf.mediaserver.kavita.model.toKavitaSeriesId
 import snd.komf.mediaserver.kavita.model.events.CoverUpdateEvent
 import snd.komf.mediaserver.kavita.model.events.NotificationProgressEvent
+import snd.komf.mediaserver.kavita.model.events.SeriesAddedEvent
 import snd.komf.mediaserver.kavita.model.events.SeriesRemovedEvent
 import snd.komf.mediaserver.model.MediaServerBookId
 import snd.komf.mediaserver.model.MediaServerLibraryId
@@ -44,6 +47,7 @@ class KavitaEventHandler(
     private val lock = ReentrantLock()
     private var hubConnection: HubConnection? = null
     private val volumesChanged: MutableList<Int> = ArrayList()
+    private val seriesAddedDuringScan: MutableList<SeriesAddedRef> = ArrayList()
 
     private var lastScan: Instant = clock.now()
     private var isActive: Boolean = false
@@ -58,6 +62,7 @@ class KavitaEventHandler(
             .build()
         hubConnection.on("NotificationProgress", ::processProgressNotification, NotificationProgressEvent::class.java)
         hubConnection.on("CoverUpdate", ::processCoverUpdate, CoverUpdateEvent::class.java)
+        hubConnection.on("SeriesAdded", ::seriesAdded, SeriesAddedEvent::class.java)
         hubConnection.on("SeriesRemoved", ::seriesRemoved, SeriesRemovedEvent::class.java)
 
         hubConnection.onClosed { reconnect(hubConnection) }
@@ -100,6 +105,17 @@ class KavitaEventHandler(
         }
     }
 
+    private fun seriesAdded(event: SeriesAddedEvent) {
+        lock.withLock {
+            seriesAddedDuringScan.add(
+                SeriesAddedRef(
+                    libraryId = event.body.libraryId,
+                    seriesId = event.body.seriesId
+                )
+            )
+        }
+    }
+
     private fun processProgressNotification(notification: NotificationProgressEvent) {
         val eventName = notification.name
         if (eventName == "ScanProgress") {
@@ -120,8 +136,10 @@ class KavitaEventHandler(
             val lastScan = this.lastScan
             lock.withLock {
                 val volumes = volumesChanged.toList()
-                eventHandlerScope.launch { processEvents(volumes, lastScan) }
+                val addedSeries = seriesAddedDuringScan.toList()
+                eventHandlerScope.launch { processEvents(volumes, addedSeries, lastScan) }
                 volumesChanged.clear()
+                seriesAddedDuringScan.clear()
                 this.lastScan = now
             }
         }
@@ -135,9 +153,10 @@ class KavitaEventHandler(
 
     private suspend fun processEvents(
         volumeIds: Collection<Int>,
+        addedSeries: Collection<SeriesAddedRef>,
         lastScan: Instant
     ) {
-        val volumes = volumeIds.mapNotNull {
+        val volumes = volumeIds.distinct().mapNotNull {
             try {
                 kavitaClient.getVolume(KavitaVolumeId(it))
             } catch (exception: KavitaResourceNotFoundException) {
@@ -166,36 +185,75 @@ class KavitaEventHandler(
                 )
             }
         }
+        val addedSeriesBookEvents = addedSeries.distinct().flatMap { added ->
+            try {
+                val series = kavitaClient.getSeries(KavitaSeriesId(added.seriesId))
+                kavitaClient.getVolumes(series.id).flatMap { volume ->
+                    volume.chapters.map { chapter ->
+                        BookEvent(
+                            libraryId = MediaServerLibraryId(added.libraryId.toString()),
+                            seriesId = MediaServerSeriesId(added.seriesId.toString()),
+                            bookId = MediaServerBookId(chapter.id.value.toString())
+                        )
+                    }
+                }
+            } catch (exception: KavitaResourceNotFoundException) {
+                emptyList()
+            }
+        }
 
-        eventListeners.forEach { it.onBooksAdded(bookEvents) }
+        val eventsToDispatch = (bookEvents + addedSeriesBookEvents)
+            .distinctBy { "${it.libraryId.value}:${it.seriesId.value}:${it.bookId.value}" }
+
+        if (eventsToDispatch.isEmpty()) return
+        eventListeners.forEach { it.onBooksAdded(eventsToDispatch) }
     }
 
     private fun registerInvocations(hubConnection: HubConnection) {
         // need to add all invocation targets in order to avoid errors in logs
         // register noop handlers
-        hubConnection.on("BackupDatabaseProgress", { }, Object::class.java)
-        hubConnection.on("BookThemeProgress", { }, Object::class.java)
-        hubConnection.on("ConvertBookmarksProgress", { }, Object::class.java)
-        hubConnection.on("CleanupProgress", { }, Object::class.java)
-        hubConnection.on("ChapterUpdated", { _: Any? -> }, Object::class.java)
-        hubConnection.on("CoverUpdateProgress", { }, Object::class.java)
-        hubConnection.on("DownloadProgress", { }, Object::class.java)
-        hubConnection.on("Error", { }, Object::class.java)
-        hubConnection.on("FileScanProgress", { }, Object::class.java)
-        hubConnection.on("Info", { }, Object::class.java)
-        hubConnection.on("LibraryModified", { }, Object::class.java)
-        hubConnection.on("OnlineUsers", { }, Object::class.java)
-        hubConnection.on("ScanSeries", { }, Object::class.java)
-        hubConnection.on("ScanProgress", { }, Object::class.java)
-        hubConnection.on("SendingToDevice", { }, Object::class.java)
-        hubConnection.on("SeriesAdded", { }, Object::class.java)
-        hubConnection.on("SeriesAddedToCollection", { }, Object::class.java)
-        hubConnection.on("SiteThemeProgress", { }, Object::class.java)
-        hubConnection.on("UpdateAvailable", { }, Object::class.java)
-        hubConnection.on("UserUpdate", { }, Object::class.java)
-        hubConnection.on("UserProgressUpdate", { }, Object::class.java)
-        hubConnection.on("VolumeUpdated", { _: Any? -> }, Object::class.java)
-        hubConnection.on("WordCountAnalyzerProgress", { }, Object::class.java)
+        registerNoopInvocation(hubConnection, "BackupDatabaseProgress")
+        registerNoopInvocation(hubConnection, "BookThemeProgress")
+        registerNoopInvocation(hubConnection, "ConvertBookmarksProgress")
+        registerNoopInvocation(hubConnection, "CleanupProgress")
+        registerNoopInvocation(hubConnection, "CollectionUpdated")
+        registerNoopInvocation(hubConnection, "ChapterRemoved")
+        registerNoopInvocation(hubConnection, "ChapterUpdated")
+        registerNoopInvocation(hubConnection, "CoverUpdateProgress")
+        registerNoopInvocation(hubConnection, "DashboardUpdate")
+        registerNoopInvocation(hubConnection, "DownloadProgress")
+        registerNoopInvocation(hubConnection, "Error")
+        registerNoopInvocation(hubConnection, "ExternalMatchRateLimitError")
+        registerNoopInvocation(hubConnection, "FileScanProgress")
+        registerNoopInvocation(hubConnection, "Info")
+        registerNoopInvocation(hubConnection, "LibraryModified")
+        registerNoopInvocation(hubConnection, "OnlineUsers")
+        registerNoopInvocation(hubConnection, "PersonMerged")
+        registerNoopInvocation(hubConnection, "ReadingSessionClose")
+        registerNoopInvocation(hubConnection, "ReadingSessionUpdate")
+        registerNoopInvocation(hubConnection, "ScrobblingKeyExpired")
+        registerNoopInvocation(hubConnection, "ScanSeries")
+        registerNoopInvocation(hubConnection, "ScanProgress")
+        registerNoopInvocation(hubConnection, "SendingToDevice")
+        registerNoopInvocation(hubConnection, "SeriesAdded")
+        registerNoopInvocation(hubConnection, "SeriesAddedToCollection")
+        registerNoopInvocation(hubConnection, "SideNavUpdate")
+        registerNoopInvocation(hubConnection, "SiteThemeProgress")
+        registerNoopInvocation(hubConnection, "SiteThemeUpdated")
+        registerNoopInvocation(hubConnection, "SmartCollectionSync")
+        registerNoopInvocation(hubConnection, "UpdateAvailable")
+        registerNoopInvocation(hubConnection, "AnnotationUpdate")
+        registerNoopInvocation(hubConnection, "AuthKeyDeleted")
+        registerNoopInvocation(hubConnection, "AuthKeyUpdate")
+        registerNoopInvocation(hubConnection, "UserUpdate")
+        registerNoopInvocation(hubConnection, "UserProgressUpdate")
+        registerNoopInvocation(hubConnection, "VolumeRemoved")
+        registerNoopInvocation(hubConnection, "VolumeUpdated")
+        registerNoopInvocation(hubConnection, "WordCountAnalyzerProgress")
+    }
+
+    private fun registerNoopInvocation(hubConnection: HubConnection, method: String) {
+        hubConnection.on(method, { _: Any? -> }, Object::class.java)
     }
 
     companion object {
@@ -205,4 +263,9 @@ class KavitaEventHandler(
             "FileScanProgress"
         )
     }
+
+    private data class SeriesAddedRef(
+        val libraryId: Int,
+        val seriesId: Int
+    )
 }

@@ -22,17 +22,21 @@ This fork includes focused Kavita hardening and behavior fixes beyond upstream d
   - per-series match/update triggers per-series scan when run individually
   - full-library match defers per-series scans and triggers one library scan at the end
   - avoids kicking off both series scan and library scan for the same library run
+  - optional safe full-library mode can suppress per-series scans during full-library runs and only issue a library-end scan
 - Apply-mode behavior for Kavita:
   - `CORE` is the recommended default for normal Kavita metadata runs
   - `CORE` updates series metadata, summary, external links, series cover, and volume covers
   - `CORE` does not write chapter-level metadata
   - `CHAPTERS` only writes chapter-level metadata
   - `FULL` combines `CORE` and `CHAPTERS`
+  - if `applyMode` is omitted by a client, this fork defaults to `CORE` for library runs
+  - this means older/basic clients that do not expose apply-mode controls still avoid chapter metadata writes by default
 - Cover-lock behavior:
   - supports split lock fields (`lockSeriesCover`, `lockVolumeCover`) in config/API
   - legacy `lockCovers` compatibility remains for older clients
 - Build/runtime baseline:
   - upgraded to Java 21 toolchain/runtime
+  - this fork should be treated as Java 21+; do not assume Java 17 compatibility
 - Safer default throttling for SQLite-backed deployments:
   - `updateEventsPerMinute: 30`
   - `scanEventsPerMinute: 5`
@@ -46,22 +50,6 @@ This fork includes focused Kavita hardening and behavior fixes beyond upstream d
 - Upstream base (from `master`): `5d0f689dc9832056e669e60f41dd8f01d7b275fe`
 - Current fork head (`kavita-hardening`): `fb03544`
 
-Fork-only commits since upstream base:
-
-- `af0f572` Kavita-focused hardening: scan strategy, API checks, rate limits, lock mapping
-- `88169c5` CI workflow branch adjustments
-- `c522ba4` JDK 21 setup and fat-jar build step
-- `809ec0e` `lockCovers` compatibility for older extension parsing
-- `4be425c` Docker publish workflow and Dockerfile jar copy fix
-- `de84ec4` Kavita compatibility fix (`isbnLocked` default)
-- `47c9f00` Safer Kavita defaults + SQLite guidance
-- `05bd6e8` README: Kavita-focused runtime/default docs
-- `c9135c8` README: upstream change summary
-- `1427854` README: upstream base/fork traceability section
-- `d65c065` README: userscript links + explicit Snd-R credit
-- `442a95a` Fix: handle Kavita 204/404 stale series IDs without failing jobs
-- `fb03544` QoL: skipped-series tracking + targeted retry with ID remap
-
 ### WebUI integration
 The browser extension/userscript can configure KOMF and run identify/match from Kavita UI.
 
@@ -72,10 +60,42 @@ The browser extension/userscript can configure KOMF and run identify/match from 
 
 Credit: userscript foundation and original work by Snd-R.
 
+Client choice note:
+
+- The Kavita-focused userscript fork is the tailored client for this repo and is the recommended UI companion.
+- The official browser extension should still work with this fork for normal Kavita use because compatibility routes and legacy config compatibility are retained.
+- The main difference is feature exposure:
+  - the tailored userscript exposes this fork's Kavita-focused options more directly
+  - the official extension may still present older/generalized controls and may not expose newer fork-specific details
+- In particular, the tailored userscript exposes:
+  - split `Lock Series Cover` and `Lock Volume Cover`
+  - apply-mode aware library/series actions aligned with this fork
+- The official extension will generally still work, but users may miss some fork-specific controls or wording and may only see the older combined `Lock Covers` style UX.
+
 Lock behavior note:
 
 - Official extension keeps a single `Lock Covers` control; in practice this applies cover lock behavior for both series and volume updates.
 - The customized userscript used in this fork exposes split controls (`Lock Series Cover` and `Lock Volume Cover`) for finer control.
+- In this fork's config defaults, `lockSeriesCover` defaults to `true` and `lockVolumeCover` defaults to `false`.
+- Legacy `lockCovers` compatibility remains for older clients/config updaters.
+
+Route compatibility note:
+
+- This fork keeps compatibility routes for existing clients.
+- The Kavita-focused userscript is already written to try both route shapes:
+  - newer style: `/api/{server}/metadata/...`
+  - legacy style: `/{server}/...`
+- Most reads and library-wide actions try the newer route first and fall back to the legacy route on `404`.
+- `identify` and per-series `match` intentionally try the legacy route first and then fall back to the newer route on `404`.
+- Job polling also supports both route shapes: `/api/jobs/...` first, then `/jobs/...`.
+- The userscript does not probe both routes up front. It uses the first one that succeeds.
+
+Apply-mode note for extension users:
+
+- The Kavita-focused userscript defaults interactive match actions to `CORE`.
+- If another client or older extension does not send `applyMode` at all, the server-side default in this fork is still `CORE`.
+- Per-series match requests also inherit the configured default apply mode when `applyMode` is omitted.
+- In practice, "regular" runs against this fork should therefore skip chapter metadata writes unless a client explicitly requests `CHAPTERS` or `FULL`.
 
 ### Library-run QoL endpoints (Kavita-focused)
 
@@ -91,6 +111,55 @@ For large runs where some series IDs go stale (204/404), this fork exposes targe
   - latest library run summary (processed/updated/skipped/errors/timing)
 - `GET /api/kavita/metadata/summary/library/{libraryId}?limit=10`
   - recent summary history
+- `GET /api/kavita/metadata/control/library/{libraryId}/status`
+  - reports whether a run is active, paused, stop-requested, and whether a resumable checkpoint exists
+- `POST /api/kavita/metadata/control/library/{libraryId}/pause`
+  - requests pause for the active library run
+- `POST /api/kavita/metadata/control/library/{libraryId}/resume?mode=CONTINUE|NEW`
+  - resumes from checkpoint or starts fresh depending on mode
+- `POST /api/kavita/metadata/control/library/{libraryId}/stop`
+  - requests graceful stop for the active library run
+
+### Health / compatibility endpoint
+
+- `GET /api/health/compat`
+  - runs Kavita API compatibility checks and returns a compatibility report
+  - `200 OK` means pass/warn, `503` means a failing compatibility check was detected
+  - useful after upgrading Kavita or validating a new deployment
+
+### Environment variables
+
+This fork can be configured through `application.yml`, environment variables, or a mix of both. For container deployments, env vars are often the easiest option.
+
+Commonly used env vars:
+
+- `KOMF_SERVER_PORT`
+- `KOMF_SERVER_KAVITA_ONLY`
+- `KOMF_SERVER_METADATA_REQUESTS_PER_MINUTE`
+- `KOMF_LOG_LEVEL`
+- `KOMF_KAVITA_BASE_URI`
+- `KOMF_KAVITA_API_KEY`
+- `KOMF_KAVITA_API_RATE_LIMIT_UPDATE_EVENTS_PER_MINUTE`
+- `KOMF_KAVITA_API_RATE_LIMIT_SCAN_EVENTS_PER_MINUTE`
+- `KOMF_KAVITA_SCAN_DEFERRED_LIBRARY_SCAN_DELAY_SECONDS`
+- `KOMF_KAVITA_SCAN_WAIT_FOR_ACTIVE_SCAN_TO_FINISH`
+- `KOMF_KAVITA_SCAN_ACTIVE_SCAN_WAIT_TIMEOUT_SECONDS`
+- `KOMF_KAVITA_SCAN_ACTIVE_SCAN_POLL_INTERVAL_SECONDS`
+- `KOMF_KAVITA_SAFE_FULL_LIBRARY_ENABLED`
+- `KOMF_KAVITA_SAFE_FULL_LIBRARY_SCAN_POLICY`
+- `KOMF_KAVITA_SAFE_FULL_LIBRARY_FAIL_FAST_ON_SQLITE_ERRORS`
+- `KOMF_KAVITA_SAFE_FULL_LIBRARY_APPLY_MODE`
+
+Environment variable note:
+
+- `application.yml` is still the clearest place for larger configs like provider ordering and per-library metadata rules.
+- Env vars are best for deployment/runtime toggles, secrets, and the Kavita safety/rate-limit knobs above.
+- Some newer scan pause/gate knobs currently remain `application.yml`-only even though they are documented in the config model:
+  - `kavita.scan.pauseOnActiveScan`
+  - `kavita.scan.resumeQuietPeriodSeconds`
+  - `kavita.scan.pauseTimeoutSeconds`
+  - `kavita.scan.pollIntervalSeconds`
+- If you use an older client, UI/config updates may still write legacy-compatible fields, but the server normalizes them into the current split config.
 
 ## Building
 
@@ -107,9 +176,14 @@ To run the application, you can either use the JAR file or Docker Compose.
 
 To run the application using the JAR file, follow these steps:
 
-1. Ensure you have Java 21 or higher installed on your system (this fork is upgraded to JDK 21).
+1. Ensure you have Java 21 or higher installed on your system (this fork is upgraded to JDK 21 and should not be assumed to run on Java 17).
 2. Run `java -jar komf-1.0-SNAPSHOT-all.jar <path to config>`.
 3. By default the server listens on `http://localhost:8085` (customizable via config/env).
+
+Java version note:
+
+- Upstream assumptions about Java 17 do not apply to this fork.
+- Use Java 21+ for local JAR runs, builds, and containers based on this repo.
 
 ### Running with Docker Compose
 
@@ -133,6 +207,13 @@ services:
       - KOMF_KAVITA_API_RATE_LIMIT_UPDATE_EVENTS_PER_MINUTE=30
       - KOMF_KAVITA_API_RATE_LIMIT_SCAN_EVENTS_PER_MINUTE=5
       - KOMF_KAVITA_SCAN_DEFERRED_LIBRARY_SCAN_DELAY_SECONDS=300
+      - KOMF_KAVITA_SCAN_WAIT_FOR_ACTIVE_SCAN_TO_FINISH=true
+      - KOMF_KAVITA_SCAN_ACTIVE_SCAN_WAIT_TIMEOUT_SECONDS=1800
+      - KOMF_KAVITA_SCAN_ACTIVE_SCAN_POLL_INTERVAL_SECONDS=2
+      - KOMF_KAVITA_SAFE_FULL_LIBRARY_ENABLED=false
+      - KOMF_KAVITA_SAFE_FULL_LIBRARY_SCAN_POLICY=NONE
+      - KOMF_KAVITA_SAFE_FULL_LIBRARY_FAIL_FAST_ON_SQLITE_ERRORS=true
+      - KOMF_KAVITA_SAFE_FULL_LIBRARY_APPLY_MODE=CORE
       - KOMF_SERVER_KAVITA_ONLY=true
       - KOMF_SERVER_METADATA_REQUESTS_PER_MINUTE=0
       - KOMF_LOG_LEVEL=INFO
@@ -153,17 +234,12 @@ You can import this template in Unraid:
 
 This fork's CI publishes container images to:
 
-- GHCR: `ghcr.io/<owner>/<repo>`
+- GHCR: `ghcr.io/dmd770/komf-kavita-only`
 - Docker Hub: `docker.io/devilmaydie770/komf-kavita-only`
 
 Recommended tag right now:
 
 - `devilmaydie770/komf-kavita-only:kavita-hardening`
-
-Required GitHub repository secrets for Docker Hub publish:
-
-- `DOCKERHUB_USERNAME`
-- `DOCKERHUB_TOKEN` (Docker Hub access token)
 
 ### Running with Docker Create
 
@@ -180,6 +256,13 @@ docker create \
   -e KOMF_KAVITA_API_RATE_LIMIT_UPDATE_EVENTS_PER_MINUTE=30 \
   -e KOMF_KAVITA_API_RATE_LIMIT_SCAN_EVENTS_PER_MINUTE=5 \
   -e KOMF_KAVITA_SCAN_DEFERRED_LIBRARY_SCAN_DELAY_SECONDS=300 \
+  -e KOMF_KAVITA_SCAN_WAIT_FOR_ACTIVE_SCAN_TO_FINISH=true \
+  -e KOMF_KAVITA_SCAN_ACTIVE_SCAN_WAIT_TIMEOUT_SECONDS=1800 \
+  -e KOMF_KAVITA_SCAN_ACTIVE_SCAN_POLL_INTERVAL_SECONDS=2 \
+  -e KOMF_KAVITA_SAFE_FULL_LIBRARY_ENABLED=false \
+  -e KOMF_KAVITA_SAFE_FULL_LIBRARY_SCAN_POLICY=NONE \
+  -e KOMF_KAVITA_SAFE_FULL_LIBRARY_FAIL_FAST_ON_SQLITE_ERRORS=true \
+  -e KOMF_KAVITA_SAFE_FULL_LIBRARY_APPLY_MODE=CORE \
   -e KOMF_SERVER_KAVITA_ONLY=true \
   -e KOMF_SERVER_METADATA_REQUESTS_PER_MINUTE=0 \
   -e KOMF_LOG_LEVEL=INFO \
@@ -247,8 +330,17 @@ kavita:
   scan:
     deferredLibraryScanDelaySeconds: 300 #or env:KOMF_KAVITA_SCAN_DEFERRED_LIBRARY_SCAN_DELAY_SECONDS
     waitForActiveScanToFinish: true #or env:KOMF_KAVITA_SCAN_WAIT_FOR_ACTIVE_SCAN_TO_FINISH
-    activeScanWaitTimeoutSeconds: 1800 #or env:KOMF_KAVITA_SCAN_ACTIVE_WAIT_TIMEOUT_SECONDS
-    activeScanPollIntervalSeconds: 2 #or env:KOMF_KAVITA_SCAN_ACTIVE_POLL_INTERVAL_SECONDS
+    activeScanWaitTimeoutSeconds: 1800 #or env:KOMF_KAVITA_SCAN_ACTIVE_SCAN_WAIT_TIMEOUT_SECONDS
+    activeScanPollIntervalSeconds: 2 #or env:KOMF_KAVITA_SCAN_ACTIVE_SCAN_POLL_INTERVAL_SECONDS
+    pauseOnActiveScan: true #application.yml only currently
+    resumeQuietPeriodSeconds: 30 #application.yml only currently
+    pauseTimeoutSeconds: 1800 #application.yml only currently
+    pollIntervalSeconds: 2 #application.yml only currently
+  safeFullLibrary:
+    enabled: false #or env:KOMF_KAVITA_SAFE_FULL_LIBRARY_ENABLED
+    scanPolicy: NONE #or env:KOMF_KAVITA_SAFE_FULL_LIBRARY_SCAN_POLICY. NONE or LIBRARY_END
+    failFastOnSqliteErrors: true #or env:KOMF_KAVITA_SAFE_FULL_LIBRARY_FAIL_FAST_ON_SQLITE_ERRORS
+    applyMode: CORE #or env:KOMF_KAVITA_SAFE_FULL_LIBRARY_APPLY_MODE
 
 # Note: active-scan waiting relies on Kavita event listener updates, so keep `kavita.eventListener.enabled: true`
 # when using scan safety guards.
@@ -267,7 +359,9 @@ kavita:
       bookCovers: false #update book thumbnails
       seriesCovers: false #update series thumbnails
       overrideExistingCovers: true # if false will upload but not select new cover if another cover already exists
-      lockCovers: true # lock cover images so that kavita does not change them
+      lockCovers: true # legacy compatibility field; retained for older clients
+      lockSeriesCover: true # split cover-lock control for series cover uploads
+      lockVolumeCover: false # split cover-lock control for volume cover uploads
       postProcessing:
         seriesTitle: false #update series title
         seriesTitleLanguage: "en" # series title update language. If empty chose first matching title
@@ -361,10 +455,23 @@ metadataProviders:
 server:
   port: 8085 # or env:KOMF_SERVER_PORT
   kavitaOnly: true # or env:KOMF_SERVER_KAVITA_ONLY. If true, Komga routes are disabled.
-  metadataRequestsPerMinute: 0 # or env:KOMF_SERVER_METADATA_REQUESTS_PER_MINUTE. 0 disables limiter.
+  metadataRequestsPerMinute: 0 # or env:KOMF_SERVER_METADATA_REQUESTS_PER_MINUTE. 0 disables limiter for metadata HTTP routes.
 
 logLevel: INFO # or env:KOMF_LOG_LEVEL
 ```
+
+### Kavita event-listener behavior
+
+- Keep `kavita.eventListener.enabled: true` if you want KOMF to react automatically to Kavita-side changes.
+- If `kavita.scan.pauseOnActiveScan` is enabled, this fork may still start the Kavita listener machinery for scan-safety tracking even when metadata auto-listening is otherwise disabled.
+- The listener is used for:
+  - automatic pickup of newly added series after Kavita scans
+  - automatic processing of series updates detected during scan completion
+  - active-scan tracking for safer deferred scan/write behavior
+  - notification triggers when notification outputs are configured
+- In current Kavita nightly behavior, new-series detection is handled from `SeriesAdded` events.
+- Existing-series scan changes are still processed from scan-progress completion plus collected update events.
+- If the event listener is disabled, manual identify/match/reset still work, but automatic "Kavita scanned new content, now KOMF should react" behavior will not.
 
 ## Metadata update config for a library
 
@@ -378,6 +485,34 @@ logLevel: INFO # or env:KOMF_LOG_LEVEL
 - If your system is stable and storage is fast (e.g., local NVMe), you can increase these gradually.
 - For large library-wide runs, prefer quiet windows (avoid overlapping heavy scan/update jobs).
 - Per-series operations are usually lower risk than full-library runs.
+
+### Safe full-library mode
+
+- `kavita.safeFullLibrary.enabled: true` enables extra protection for full-library runs.
+- The main intent is to reduce risky write/scan overlap on Kavita SQLite deployments.
+- `scanPolicy: NONE`
+  - do not force an additional library-end scan policy change beyond the normal hardened behavior
+- `scanPolicy: LIBRARY_END`
+  - suppress per-series end scans during a full-library run and issue a single library scan at the end
+- `applyMode`
+  - defines the default apply mode used when a client omits `applyMode`
+  - the default in this fork is `CORE`
+- `failFastOnSqliteErrors`
+  - aborts quickly when Kavita returns known SQLite/corruption-like server errors instead of retrying through them
+
+### Scan-safety knobs
+
+- `kavita.scan.waitForActiveScanToFinish`
+  - delays sensitive work until Kavita scan/maintenance activity settles
+- `kavita.scan.pauseOnActiveScan`
+  - pauses queued Kavita writes while active scan/maintenance work is detected
+- `kavita.scan.resumeQuietPeriodSeconds`
+  - requires a quiet period after activity ends before writes resume
+- `kavita.scan.pauseTimeoutSeconds`
+  - maximum time the write gate will stay paused before continuing
+- `kavita.scan.pollIntervalSeconds`
+  - polling interval used by the pause gate
+- These are primarily useful on SQLite-backed Kavita instances where overlapping work can be noisy or risky.
 
 You can configure a set of metadata update options that will only be used with specified library. If no options are
 specified for a library
@@ -626,10 +761,33 @@ Use the following HTTP endpoint to set series metadata from specified provider:
 
 - `POST /{media-server}/match/library/{libraryId}/series/{seriesId}`: Attempts to match the specified series in the
   specified library. Optional query `applyMode=CORE|CHAPTERS|FULL`. If omitted, the server uses the configured default
-  apply mode. In this fork, `CORE` is the recommended mode for normal Kavita runs because it skips chapter writes.
+  apply mode. In this fork, the effective default is `CORE`, and `CORE` is the recommended mode for normal Kavita runs
+  because it skips chapter writes while still applying series metadata, series cover, and volume covers.
 - `POST /{media-server}/match/library/{libraryId}`: Attempts to match all series in the specified library.
   Optional query `dryRun=true` will only log planned matches/updates without writing metadata or triggering scans.
-  Optional query `applyMode=CORE|CHAPTERS|FULL`.
+  Optional query `applyMode=CORE|CHAPTERS|FULL`. If omitted, this fork defaults to `CORE`.
+- `GET /{media-server}/summary/library/{libraryId}/latest`: latest run summary for the library.
+- `GET /{media-server}/summary/library/{libraryId}?limit=10`: recent run summary history.
+- `GET /{media-server}/control/library/{libraryId}/status`: active/paused/stop/checkpoint status for a library run.
+- `POST /{media-server}/control/library/{libraryId}/pause`: pause the active library run.
+- `POST /{media-server}/control/library/{libraryId}/resume?mode=CONTINUE|NEW`: resume a paused/checkpointed run.
+- `POST /{media-server}/control/library/{libraryId}/stop`: request graceful stop for the active library run.
 - `POST /{media-server}/reset/library/{libraryId}/series/{seriesId}`: Resets all metadata for the specified series in
   the specified library.
 - `POST /{media-server}/reset/library/{libraryId}`: Resets all metadata for all series in the specified library.
+
+### Apply modes summary
+
+- `CORE`
+  - writes series metadata
+  - uploads/selects series covers when enabled
+  - uploads/selects volume covers when enabled
+  - skips chapter metadata writes
+  - is the default/recommended mode in this fork
+- `CHAPTERS`
+  - only writes chapter metadata
+  - does not perform core series/cover writes
+- `FULL`
+  - combines `CORE` and `CHAPTERS`
+
+For Kavita users who mainly want series metadata and cover updates without chapter-level churn, use `CORE` or rely on the fork default by omitting `applyMode`.
