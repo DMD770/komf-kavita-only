@@ -114,6 +114,10 @@ class KavitaEventHandler(
                 )
             )
         }
+        logger.info {
+            "Kavita listener queued SeriesAdded for library=${event.body.libraryId} " +
+                "series=${event.body.seriesId} (${event.body.seriesName}) until ScanProgress ended"
+        }
     }
 
     private fun processProgressNotification(notification: NotificationProgressEvent) {
@@ -137,6 +141,10 @@ class KavitaEventHandler(
             lock.withLock {
                 val volumes = volumesChanged.toList()
                 val addedSeries = seriesAddedDuringScan.toList()
+                logger.info {
+                    "Kavita listener received ScanProgress ended; flushing ${volumes.size} volume updates " +
+                        "and ${addedSeries.size} queued added series"
+                }
                 eventHandlerScope.launch { processEvents(volumes, addedSeries, lastScan) }
                 volumesChanged.clear()
                 seriesAddedDuringScan.clear()
@@ -205,7 +213,14 @@ class KavitaEventHandler(
         val eventsToDispatch = (bookEvents + addedSeriesBookEvents)
             .distinctBy { "${it.libraryId.value}:${it.seriesId.value}:${it.bookId.value}" }
 
-        if (eventsToDispatch.isEmpty()) return
+        if (eventsToDispatch.isEmpty()) {
+            logger.info { "Kavita listener flush produced no book events after ScanProgress ended" }
+            return
+        }
+        logger.info {
+            "Kavita listener flush produced ${eventsToDispatch.size} book events " +
+                "(${bookEvents.size} from updated volumes, ${addedSeriesBookEvents.size} from queued added series)"
+        }
         eventListeners.forEach { it.onBooksAdded(eventsToDispatch) }
     }
 
