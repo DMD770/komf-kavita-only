@@ -154,12 +154,32 @@ class MetadataRoutes(
             val libraryId = request.libraryId?.value
                 ?: mediaServerClient.first().getSeries(MediaServerSeriesId(request.seriesId.value)).libraryId.value
 
-            val jobId = metadataServiceProvider.first().metadataServiceFor(libraryId).setSeriesMetadata(
-                MediaServerSeriesId(request.seriesId.value),
-                request.provider.toProvider(),
-                ProviderSeriesId(request.providerSeriesId.value),
-                null
-            )
+            val applyMode = request.applyMode
+                ?.let {
+                    when (it) {
+                        KomfLibraryApplyMode.CORE -> snd.komf.mediaserver.metadata.LibraryApplyMode.CORE
+                        KomfLibraryApplyMode.CHAPTERS -> snd.komf.mediaserver.metadata.LibraryApplyMode.CHAPTERS
+                        KomfLibraryApplyMode.FULL -> snd.komf.mediaserver.metadata.LibraryApplyMode.FULL
+                    }
+                }
+
+            val metadataService = metadataServiceProvider.first().metadataServiceFor(libraryId)
+            val jobId = if (applyMode != null) {
+                metadataService.setSeriesMetadata(
+                    MediaServerSeriesId(request.seriesId.value),
+                    request.provider.toProvider(),
+                    ProviderSeriesId(request.providerSeriesId.value),
+                    null,
+                    applyMode
+                )
+            } else {
+                metadataService.setSeriesMetadata(
+                    MediaServerSeriesId(request.seriesId.value),
+                    request.provider.toProvider(),
+                    ProviderSeriesId(request.providerSeriesId.value),
+                    null
+                )
+            }
 
             call.respond(
                 KomfMetadataJobResponse(KomfMetadataJobId(jobId.value.toString()))

@@ -235,13 +235,17 @@ class MetadataService(
         seriesId: MediaServerSeriesId,
         providerName: CoreProviders,
         providerSeriesId: ProviderSeriesId,
-        edition: String?
+        edition: String?,
+        applyMode: LibraryApplyMode = defaultLibraryApplyMode
     ): MetadataJobId {
         val jobId = launchJob(seriesId) { eventFlow ->
             val context = loadSeriesContextOrSkip(seriesId) ?: return@launchJob
             val (series, books) = context
             val seriesTitle = series.metadata.title.ifBlank { series.name }
-            logger.info { "Setting metadata for series \"${seriesTitle}\" ${series.id} using $providerName $providerSeriesId" }
+            logger.info {
+                "Setting metadata for series \"${seriesTitle}\" ${series.id} using $providerName $providerSeriesId " +
+                    "(applyMode=$applyMode)"
+            }
             val provider =
                 metadataProviders.provider(series.libraryId.value, providerName) ?: throw RuntimeException()
 
@@ -261,14 +265,14 @@ class MetadataService(
             } else SeriesAndBookMetadata(seriesMetadata.metadata, bookMetadata)
 
             eventFlow.emit(PostProcessingStartEvent)
-            metadataUpdateService.updateMetadata(series, metadata)
+            metadataUpdateService.updateMetadata(series, metadata, deferScan = false, applyMode = applyMode)
             seriesMatchRepository.save(
                 seriesId = series.id,
                 type = MANUAL,
                 provider = providerName,
                 providerSeriesId = providerSeriesId,
             )
-            logger.info { "finished metadata update of series \"${seriesTitle}\" ${series.id}" }
+            logger.info { "finished metadata update of series \"${seriesTitle}\" ${series.id} (applyMode=$applyMode)" }
         }
         return jobId
     }

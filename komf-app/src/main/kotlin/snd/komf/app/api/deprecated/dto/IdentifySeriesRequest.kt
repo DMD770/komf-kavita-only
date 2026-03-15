@@ -8,5 +8,6 @@ data class IdentifySeriesRequest(
     val seriesId: String,
     val provider: String,
     val providerSeriesId: String,
-    val edition: String? = null
+    val edition: String? = null,
+    val applyMode: String? = null
 )

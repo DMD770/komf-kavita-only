@@ -12,4 +12,5 @@ data class KomfIdentifyRequest(
     val seriesId: KomfServerSeriesId,
     val provider: KomfProviders,
     val providerSeriesId: KomfProviderSeriesId,
+    val applyMode: KomfLibraryApplyMode? = null,
 )

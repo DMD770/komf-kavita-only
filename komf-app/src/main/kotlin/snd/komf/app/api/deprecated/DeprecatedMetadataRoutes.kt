@@ -94,12 +94,29 @@ class DeprecatedMetadataRoutes(
             val libraryId = request.libraryId
                 ?: mediaServerClient.first().getSeries(MediaServerSeriesId(request.seriesId)).libraryId.value
 
-            val jobId = metadataServiceProvider.first().metadataServiceFor(libraryId).setSeriesMetadata(
-                MediaServerSeriesId(request.seriesId),
-                CoreProviders.valueOf(request.provider.uppercase()),
-                ProviderSeriesId(request.providerSeriesId),
-                request.edition
-            )
+            val applyMode = request.applyMode?.let { runCatching { LibraryApplyMode.valueOf(it.uppercase()) }.getOrNull() }
+            if (request.applyMode != null && applyMode == null) {
+                call.respond(HttpStatusCode.BadRequest, KomfErrorResponse("Invalid applyMode '${request.applyMode}'. Expected CORE|CHAPTERS|FULL"))
+                return@post
+            }
+
+            val metadataService = metadataServiceProvider.first().metadataServiceFor(libraryId)
+            val jobId = if (applyMode != null) {
+                metadataService.setSeriesMetadata(
+                    MediaServerSeriesId(request.seriesId),
+                    CoreProviders.valueOf(request.provider.uppercase()),
+                    ProviderSeriesId(request.providerSeriesId),
+                    request.edition,
+                    applyMode
+                )
+            } else {
+                metadataService.setSeriesMetadata(
+                    MediaServerSeriesId(request.seriesId),
+                    CoreProviders.valueOf(request.provider.uppercase()),
+                    ProviderSeriesId(request.providerSeriesId),
+                    request.edition
+                )
+            }
             jobTracker.first().getMetadataJobEvents(jobId)
                 ?.takeWhile { it != CompletionEvent }
                 ?.collect {}
