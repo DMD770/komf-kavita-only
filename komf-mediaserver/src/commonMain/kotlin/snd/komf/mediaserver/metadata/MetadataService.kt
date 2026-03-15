@@ -110,6 +110,29 @@ internal fun associateBookMetadataByNumber(
     }.toMap()
 }
 
+internal data class ProviderBookFetchPlan(
+    val providerBook: SeriesBook,
+    val localBooks: List<MediaServerBook>,
+)
+
+internal fun buildProviderBookFetchPlan(
+    metadataMatch: Map<MediaServerBook, SeriesBook?>
+): List<ProviderBookFetchPlan> {
+    return metadataMatch.entries
+        .mapNotNull { (localBook, providerBook) -> providerBook?.let { localBook to it } }
+        .groupBy(
+            keySelector = { (_, providerBook) -> providerBook.id },
+            valueTransform = { (localBook, providerBook) -> localBook to providerBook }
+        )
+        .values
+        .map { matches ->
+            ProviderBookFetchPlan(
+                providerBook = matches.first().second,
+                localBooks = matches.map { it.first }
+            )
+        }
+}
+
 data class SkippedSeriesEntry(
     val oldSeriesId: MediaServerSeriesId,
     val hintedName: String?,
@@ -909,20 +932,23 @@ class MetadataService(
             }
         }
 
-        val fetchSize = metadataMatch.filterValues { it != null }.size
+        val fetchPlan = buildProviderBookFetchPlan(metadataMatch)
+        val fetchSize = fetchPlan.size
         var progress = 1
         return try {
-            metadataMatch.map { (book, seriesBookMeta) ->
-                if (seriesBookMeta != null) {
-                    logger.info { "(${provider.providerName()}) fetching metadata for book ${seriesBookMeta.name}" }
-                    eventFlow.emit(ProviderBookEvent(provider.providerName(), fetchSize, progress))
-                    progress += 1
+            val fetchedMetadataByBookId = mutableMapOf<MediaServerBook, BookMetadata?>()
+            fetchPlan.forEach { plan ->
+                logger.info { "(${provider.providerName()}) fetching metadata for book ${plan.providerBook.name}" }
+                eventFlow.emit(ProviderBookEvent(provider.providerName(), fetchSize, progress))
+                progress += 1
 
-                    book to provider.getBookMetadata(seriesMeta.id, seriesBookMeta.id).metadata
-                } else {
-                    book to null
+                val metadata = provider.getBookMetadata(seriesMeta.id, plan.providerBook.id).metadata
+                plan.localBooks.forEach { localBook ->
+                    fetchedMetadataByBookId[localBook] = metadata
                 }
-            }.toMap()
+            }
+
+            metadataMatch.keys.associateWith { fetchedMetadataByBookId[it] }
 
         } catch (e: Exception) {
             throw ProviderException(provider.providerName(), e)
