@@ -2,6 +2,7 @@ package snd.komf.providers.mangadex
 
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertNotNull
 import snd.komf.model.AuthorRole
 import snd.komf.providers.BookMetadataConfig
@@ -55,6 +56,49 @@ class MangaDexCoverSelectionTest {
         assertNotNull(volumeNineBook)
         assertEquals("9", volumeNineBook.name)
         assertEquals("vol-9-en.jpg", volumeNineBook.id.id)
+    }
+
+    @Test
+    fun `volume covers fall back to non preferred locale per volume`() {
+        val series = testManga()
+        val covers = listOf(
+            cover(fileName = "vol-1-ko.jpg", volume = "1", locale = "ko"),
+            cover(fileName = "vol-1_5-ko.jpg", volume = "1.5", locale = "ko"),
+            cover(fileName = "vol-2-ko.jpg", volume = "2", locale = "ko"),
+            cover(fileName = "vol-2_5-ko.jpg", volume = "2.5", locale = "ko"),
+            cover(fileName = "vol-3-ko.jpg", volume = "3", locale = "ko"),
+            cover(fileName = "vol-3_1-ko.jpg", volume = "3.1", locale = "ko"),
+            cover(fileName = "vol-4-ko.jpg", volume = "4", locale = "ko"),
+            cover(fileName = "vol-5-ko.jpg", volume = "5", locale = "ko"),
+        )
+
+        val metadata = mapper.toSeriesMetadata(series, covers, cover = null)
+
+        val exactVolumes = metadata.books
+            .mapNotNull { it.number?.start }
+            .filter { it == kotlin.math.floor(it) }
+            .map { it.toInt() }
+            .sorted()
+
+        assertEquals(listOf(1, 2, 3, 4, 5), exactVolumes)
+        assertFalse(metadata.books.isEmpty())
+        assertEquals("vol-1-ko.jpg", metadata.books.first { it.name == "1" }.id.id)
+        assertEquals("vol-5-ko.jpg", metadata.books.first { it.name == "5" }.id.id)
+    }
+
+    @Test
+    fun `volume cover prefers configured language when same volume has multiple locales`() {
+        val series = testManga()
+        val covers = listOf(
+            cover(fileName = "vol-2-ko.jpg", volume = "2", locale = "ko"),
+            cover(fileName = "vol-2-ja.jpg", volume = "2", locale = "ja"),
+        )
+
+        val metadata = mapper.toSeriesMetadata(series, covers, cover = null)
+        val volumeTwo = metadata.books.firstOrNull { it.name == "2" }
+
+        assertNotNull(volumeTwo)
+        assertEquals("vol-2-ja.jpg", volumeTwo.id.id)
     }
 
     private fun cover(fileName: String, volume: String?, locale: String?): MangaDexCoverArt {

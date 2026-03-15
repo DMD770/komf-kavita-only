@@ -3,6 +3,7 @@ package snd.komf.mediaserver.metadata
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNotNull
+import kotlin.test.assertNull
 import snd.komf.mediaserver.kavita.resolveKavitaBookNumber
 import snd.komf.mediaserver.kavita.model.KavitaSeriesId
 import snd.komf.mediaserver.kavita.model.KavitaVolume
@@ -62,6 +63,51 @@ class VolumeCoverAssociationTest {
         assertNotNull(association[mediaBook])
         assertEquals("mdx-vol-9-cover.jpg", association[mediaBook]?.id?.id)
     }
+
+    @Test
+    fun `fractional mangadex-only covers do not block exact integer volume matches`() {
+        val volumeOne = mediaBook(id = "1", name = "Vol. 1", number = 1)
+        val volumeTwo = mediaBook(id = "2", name = "Vol. 2", number = 2)
+        val providerBooks = listOf(
+            providerBook("mdx-vol-1-cover.jpg", "1", 1.0),
+            providerBook("mdx-vol-1_5-cover.jpg", "1.5", 1.5),
+            providerBook("mdx-vol-2-cover.jpg", "2", 2.0),
+            providerBook("mdx-vol-2_5-cover.jpg", "2.5", 2.5),
+        )
+
+        val association = associateBookMetadataByNumber(
+            books = listOf(volumeOne, volumeTwo),
+            providerBooks = providerBooks,
+            edition = null,
+            libraryType = MediaType.MANGA
+        )
+
+        assertEquals("mdx-vol-1-cover.jpg", association[volumeOne]?.id?.id)
+        assertEquals("mdx-vol-2-cover.jpg", association[volumeTwo]?.id?.id)
+        assertNull(association.values.firstOrNull { it?.name == "1.5" })
+        assertNull(association.values.firstOrNull { it?.name == "2.5" })
+    }
+
+    private fun mediaBook(id: String, name: String, number: Int) = MediaServerBook(
+        id = MediaServerBookId(id),
+        seriesId = MediaServerSeriesId("217"),
+        libraryId = null,
+        seriesTitle = "Series",
+        name = name,
+        url = "/tmp/$id.cbz",
+        number = number,
+        oneshot = false,
+        metadata = emptyBookMetadata(),
+        deleted = false
+    )
+
+    private fun providerBook(id: String, name: String, number: Double) = SeriesBook(
+        id = ProviderBookId(id),
+        number = BookRange(number, number),
+        name = name,
+        type = null,
+        edition = null
+    )
 
     private fun emptyBookMetadata() = MediaServerBookMetadata(
         title = "",

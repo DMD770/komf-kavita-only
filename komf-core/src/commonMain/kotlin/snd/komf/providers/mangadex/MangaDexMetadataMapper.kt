@@ -205,10 +205,11 @@ class MangaDexMetadataMapper(
         )
 
         val books = covers
-            .filter { it.attributes.locale in coverLanguages }
             .filter { it.attributes.volume != null }
             .groupBy { it.attributes.volume }.values
-            .map { coverArtToBook(it.first()) }
+            .mapNotNull { volumeCovers ->
+                pickCoverByLanguage(volumeCovers)?.let { coverArtToBook(it) }
+            }
 
         return MetadataConfigApplier.apply(
             ProviderSeriesMetadata(
